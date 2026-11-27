@@ -1,6 +1,8 @@
 package ipcauth
 
 import (
+	"context"
+
 	"strings"
 
 	"google.golang.org/grpc/codes"
@@ -111,4 +113,18 @@ func denyOwnership(action string, id Identity, target Target) error {
 		return UnownedError(action, target.Handle, consoleLookup(id))
 	}
 	return NotOwnerError(action)
+}
+
+type authzLevelContextKey struct{}
+
+// WithAuthzLevel records the level the gate resolved for this request.
+func WithAuthzLevel(ctx context.Context, level AuthzLevel) context.Context {
+	return context.WithValue(ctx, authzLevelContextKey{}, level)
+}
+
+// AuthzLevelFromContext returns the level resolved by the gate. A handler that
+// is reachable only through the gate can use it for defense in depth.
+func AuthzLevelFromContext(ctx context.Context) (AuthzLevel, bool) {
+	level, ok := ctx.Value(authzLevelContextKey{}).(AuthzLevel)
+	return level, ok
 }

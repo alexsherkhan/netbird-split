@@ -143,8 +143,8 @@ var methodPolicies = map[string]MethodPolicy{
 }
 
 // splitMethodPolicies is the authorization surface of SplitTunnelService.
-// Reads are available to every identified caller. Mutations need a privileged
-// caller because they rewrite the daemon's kernel-facing policy.
+// Reads are available to every identified caller. Mutations need the active
+// profile owner, matching the existing profile configuration authority.
 var splitMethodPolicies = map[string]MethodPolicy{
 	splitServicePath + "GetStatus":        {Level: AuthzLevelIdentified, Action: "reading split tunnel status"},
 	splitServicePath + "GetConfig":        {Level: AuthzLevelIdentified, Action: "reading the split tunnel configuration"},
@@ -155,12 +155,12 @@ var splitMethodPolicies = map[string]MethodPolicy{
 	splitServicePath + "SubscribeEvents":  {Level: AuthzLevelIdentified, Action: "following split tunnel events"},
 
 	splitServicePath + "SetConfig": {
-		Level:  AuthzLevelPrivileged,
+		Level:  AuthzLevelProfileOwner,
 		Audit:  true,
 		Action: "changing the split tunnel configuration",
 	},
 	splitServicePath + "RollbackConfig": {
-		Level:  AuthzLevelPrivileged,
+		Level:  AuthzLevelProfileOwner,
 		Audit:  true,
 		Action: "rolling back the split tunnel configuration",
 	},
