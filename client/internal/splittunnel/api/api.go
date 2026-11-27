@@ -174,6 +174,7 @@ func New(backend Backend, opts ...Option) *Service {
 		maxResponseBytes: DefaultMaxResponseBytes,
 		eventHistory:     DefaultEventHistory,
 		eventBuffer:      DefaultSubscriberBuffer,
+		limiter:          newRateLimiter(DefaultRateLimit, DefaultRateBurst),
 	}
 	for _, opt := range opts {
 		opt(s)
