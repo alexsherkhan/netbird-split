@@ -1,20 +1,28 @@
 import { useCallback, useEffect, useMemo, useRef, useState, type ReactNode } from "react";
 import { useTranslation } from "react-i18next";
+import * as Tabs from "@radix-ui/react-tabs";
 import {
+    Activity,
     AlertTriangle,
     CheckCircle2,
     CircleSlash,
     Info,
+    LayoutDashboard,
+    ListChecks,
     RefreshCw,
+    RotateCcw,
     Route,
     ShieldCheck,
     ShieldOff,
+    Stethoscope,
 } from "lucide-react";
 import { Networks as NetworksSvc, SplitTunnel } from "@bindings/services";
 import type { Network } from "@bindings/services/models.js";
 import type {
+    SplitTunnelApplication,
     SplitTunnelConfig,
-    SplitTunnelExitNodeRule,
+    SplitTunnelRule,
+    SplitTunnelRules,
     SplitTunnelStatus,
 } from "@bindings/services/models.js";
 import { Badge } from "@/components/Badge";
@@ -27,62 +35,42 @@ import { useConfirm } from "@/contexts/DialogContext";
 import { isExitNode } from "@/contexts/NetworksContext";
 import { useStatus } from "@/contexts/StatusContext";
 import { cn } from "@/lib/cn";
-import { errorCode, formatErrorMessage } from "@/lib/errors";
+import { errorCode, errorField, formatErrorMessage } from "@/lib/errors";
+import {
+    ActivityPanel,
+    DiagnosticsLayout,
+    DNSPanel,
+    StatisticsPanel,
+    SupportBundlePanel,
+    TroubleshootingPanel,
+} from "@/modules/split-tunnel/DiagnosticsPanels";
+import { RuleEditor } from "@/modules/split-tunnel/RuleEditor";
+import {
+    cloneDraft,
+    DEFAULT_ACTIONS,
+    defaultActionFrom,
+    draftFromConfig,
+    draftsEqual,
+    isUnavailableCode,
+    KILL_SWITCHES,
+    killSwitchFrom,
+    MODES,
+    modeFrom,
+    type DefaultAction,
+    type Draft,
+    type KillSwitch,
+    type Mode,
+    type RevisionSnapshot,
+    type RuleDraft,
+    ruleToInput,
+    type Translate,
+    validateRule,
+} from "@/modules/split-tunnel/splitTunnelDraft";
 import { SectionGroup } from "@/modules/settings/SettingsSection";
 
-const MODES = ["standard", "include", "exclude", "custom"] as const;
-type Mode = (typeof MODES)[number];
+type ServiceError = { code: string; message: string; field?: string };
 
-const KILL_SWITCHES = ["disabled", "selective", "global", "strict"] as const;
-type KillSwitch = (typeof KILL_SWITCHES)[number];
-
-const DEFAULT_ACTIONS = ["vpn", "direct", "block"] as const;
-type DefaultAction = (typeof DEFAULT_ACTIONS)[number];
-
-type Draft = {
-    enabled: boolean;
-    mode: Mode;
-    defaultAction: DefaultAction;
-    killSwitch: KillSwitch;
-    exitNodes: Record<string, string>;
-};
-
-type ServiceError = { code: string; message: string };
-
-const modeFrom = (value: string): Mode =>
-    MODES.includes(value as Mode) ? (value as Mode) : "standard";
-
-const killSwitchFrom = (value: string): KillSwitch =>
-    KILL_SWITCHES.includes(value as KillSwitch) ? (value as KillSwitch) : "disabled";
-
-const defaultActionFrom = (value: string): DefaultAction =>
-    DEFAULT_ACTIONS.includes(value as DefaultAction) ? (value as DefaultAction) : "vpn";
-
-const draftFromConfig = (config: SplitTunnelConfig): Draft => ({
-    enabled: config.enabled,
-    mode: modeFrom(config.mode),
-    defaultAction: defaultActionFrom(config.defaultAction),
-    killSwitch: killSwitchFrom(config.killSwitch),
-    exitNodes: Object.fromEntries(
-        (config.exitNodeRules ?? []).map((rule) => [rule.ruleId, rule.exitNodeId]),
-    ),
-});
-
-const cloneDraft = (draft: Draft): Draft => ({
-    ...draft,
-    exitNodes: { ...draft.exitNodes },
-});
-
-const draftsEqual = (a: Draft, b: Draft): boolean =>
-    a.enabled === b.enabled &&
-    a.mode === b.mode &&
-    a.defaultAction === b.defaultAction &&
-    a.killSwitch === b.killSwitch &&
-    Object.keys(a.exitNodes).length === Object.keys(b.exitNodes).length &&
-    Object.entries(a.exitNodes).every(([rule, exitNode]) => b.exitNodes[rule] === exitNode);
-
-const isUnavailableCode = (code: string): boolean =>
-    code === "split_tunnel_unavailable" || code === "split_tunnel_version_unsupported";
+type ExitNodeSelection = { key: string; label: string; exitNodeId: string };
 
 export const SplitTunnelScreen = () => {
     const { t } = useTranslation();
@@ -91,16 +79,48 @@ export const SplitTunnelScreen = () => {
 
     const [status, setStatus] = useState<SplitTunnelStatus | null>(null);
     const [config, setConfig] = useState<SplitTunnelConfig | null>(null);
-    const [draft, setDraft] = useState<Draft | null>(null);
+    const [rulesResult, setRulesResult] = useState<SplitTunnelRules | null>(null);
+    const [apps, setApps] = useState<SplitTunnelApplication[]>([]);
+    const [appsRedacted, setAppsRedacted] = useState(false);
     const [exitNodes, setExitNodes] = useState<Network[]>([]);
+    const [draft, setDraft] = useState<Draft | null>(null);
+    const [initial, setInitial] = useState<Draft | null>(null);
+    const [revisionHistory, setRevisionHistory] = useState<RevisionSnapshot[]>([]);
     const [loading, setLoading] = useState(true);
     const [saving, setSaving] = useState(false);
+    const [rollingBack, setRollingBack] = useState(false);
     const [loadError, setLoadError] = useState<ServiceError | null>(null);
     const [saveError, setSaveError] = useState<ServiceError | null>(null);
+    const [rulesError, setRulesError] = useState<ServiceError | null>(null);
+    const [appsError, setAppsError] = useState<ServiceError | null>(null);
     const [applied, setApplied] = useState(false);
 
-    const [initial, setInitial] = useState<Draft | null>(null);
     const dirtyRef = useRef(false);
+    const translate = useCallback<Translate>((key, options) => t(key, options), [t]);
+
+    const loadRules = useCallback(async () => {
+        setRulesError(null);
+        try {
+            const result = await SplitTunnel.ListRules();
+            setRulesResult(result);
+        } catch (e) {
+            setRulesResult(null);
+            setRulesError({ code: errorCode(e), message: formatErrorMessage(e) });
+        }
+    }, []);
+
+    const loadApplications = useCallback(async () => {
+        setAppsError(null);
+        try {
+            const result = await SplitTunnel.ListApplications("");
+            setApps(result.applications ?? []);
+            setAppsRedacted(result.executableRedacted || result.sourceRedacted);
+        } catch (e) {
+            setApps([]);
+            setAppsRedacted(false);
+            setAppsError({ code: errorCode(e), message: formatErrorMessage(e) });
+        }
+    }, []);
 
     const load = useCallback(async () => {
         setLoading(true);
@@ -117,12 +137,27 @@ export const SplitTunnelScreen = () => {
                 setInitial(nextDraft);
                 setDraft(nextDraft);
             }
+            if (nextConfig.exists && nextConfig.revision > 0) {
+                const snapshot: RevisionSnapshot = {
+                    revision: nextConfig.revision,
+                    mode: modeFrom(nextConfig.mode),
+                    ruleCount: nextConfig.ruleCount,
+                    at: new Date().toISOString(),
+                };
+                setRevisionHistory((current) =>
+                    current.some((item) => item.revision === snapshot.revision)
+                        ? current
+                        : [snapshot, ...current].slice(0, 20),
+                );
+            }
         } catch (e) {
             setLoadError({ code: errorCode(e), message: formatErrorMessage(e) });
         } finally {
             setLoading(false);
         }
-    }, []);
+        void loadRules();
+        void loadApplications();
+    }, [loadApplications, loadRules]);
 
     useEffect(() => {
         void load();
@@ -173,18 +208,64 @@ export const SplitTunnelScreen = () => {
         return () => window.removeEventListener("beforeunload", onBeforeUnload);
     }, [dirty]);
 
+    const validation = useMemo(() => {
+        const issues: Record<string, string[]> = {};
+        if (!draft) return issues;
+        for (const rule of draft.rules) {
+            issues[rule.key] = validateRule(rule, draft.mode, translate);
+        }
+        return issues;
+    }, [draft, translate]);
+
+    const validationCount = useMemo(
+        () =>
+            Object.values(validation).reduce(
+                (total: number, issues: string[]) => total + issues.length,
+                0,
+            ),
+        [validation],
+    );
+
     const isLoading = loading && !config;
     const unavailable = loadError !== null && isUnavailableCode(loadError.code);
     const canEdit = config !== null && !unavailable;
+    const disabled = !canEdit || saving || rollingBack;
+
+    const unsupportedRules = useMemo(
+        () => (config?.rules ?? []).filter((rule: SplitTunnelRule) => !rule.supported),
+        [config],
+    );
+    const conflicts = rulesResult?.conflicts ?? [];
+    const rulesUnavailable = rulesError !== null && isUnavailableCode(rulesError.code);
 
     const exitNodeOptions = useMemo(() => {
         const ids = new Map<string, string>();
         for (const node of exitNodes) ids.set(node.id, node.id);
-        for (const rule of config?.exitNodeRules ?? []) {
+        for (const rule of draft?.rules ?? []) {
             if (rule.exitNodeId) ids.set(rule.exitNodeId, rule.exitNodeId);
         }
         return [...ids.entries()].map(([value, label]) => ({ value, label }));
-    }, [config, exitNodes]);
+    }, [draft, exitNodes]);
+
+    const exitNodeRules = useMemo<ExitNodeSelection[]>(
+        () =>
+            (draft?.rules ?? [])
+                .filter((rule) => rule.action === "exit_node")
+                .map((rule) => ({
+                    key: rule.key,
+                    label: rule.name || rule.id || t("splitTunnel.rules.unnamed"),
+                    exitNodeId: rule.exitNodeId,
+                })),
+        [draft, t],
+    );
+
+    const exitNodeSummary = useMemo(() => {
+        const ids = new Set<string>();
+        for (const rule of draft?.rules ?? []) {
+            if (rule.action === "exit_node" && rule.exitNodeId) ids.add(rule.exitNodeId);
+        }
+        return ids.size > 0 ? [...ids].join(", ") : "";
+    }, [draft]);
 
     const backendDegraded = useMemo(
         () =>
@@ -193,14 +274,6 @@ export const SplitTunnelScreen = () => {
             ) ?? false,
         [status],
     );
-
-    const exitNodeSummary = useMemo(() => {
-        const ids = new Set<string>();
-        for (const rule of config?.exitNodeRules ?? []) {
-            if (rule.exitNodeId) ids.add(rule.exitNodeId);
-        }
-        return ids.size > 0 ? [...ids].join(", ") : "";
-    }, [config]);
 
     const updateDraft = (change: (current: Draft) => Draft) => {
         setDraft((current) => (current ? change(current) : current));
@@ -219,10 +292,10 @@ export const SplitTunnelScreen = () => {
         }));
     };
 
-    const handleExitNode = (rule: SplitTunnelExitNodeRule, exitNodeId: string) => {
+    const handleExitNode = (key: string, exitNodeId: string) => {
         updateDraft((current) => ({
             ...current,
-            exitNodes: { ...current.exitNodes, [rule.ruleId]: exitNodeId },
+            rules: current.rules.map((rule) => (rule.key === key ? { ...rule, exitNodeId } : rule)),
         }));
     };
 
@@ -239,13 +312,21 @@ export const SplitTunnelScreen = () => {
         const switchingToStandard = config.enabled && draft.mode === "standard";
         const removingKillSwitch =
             killSwitchFrom(config.killSwitch) !== "disabled" && draft.killSwitch === "disabled";
-        if (!disabling && !switchingToStandard && !removingKillSwitch) return true;
+        const blockingDefault =
+            draft.mode === "custom" &&
+            draft.defaultAction === "block" &&
+            defaultActionFrom(config.defaultAction) !== "block";
+        if (!disabling && !switchingToStandard && !removingKillSwitch && !blockingDefault) {
+            return true;
+        }
 
         const description = disabling
             ? t("splitTunnel.confirm.disable")
             : switchingToStandard
               ? t("splitTunnel.confirm.standard")
-              : t("splitTunnel.confirm.killSwitch");
+              : removingKillSwitch
+                ? t("splitTunnel.confirm.killSwitch")
+                : t("splitTunnel.confirm.blockDefault");
 
         return confirm({
             title: t("splitTunnel.confirm.title"),
@@ -256,8 +337,28 @@ export const SplitTunnelScreen = () => {
         });
     };
 
+    const confirmRuleDelete = async (rule: RuleDraft): Promise<boolean> => {
+        if (!rule.id) return true;
+        return confirm({
+            title: t("splitTunnel.confirm.ruleDeleteTitle"),
+            description: t("splitTunnel.confirm.ruleDelete", {
+                rule: rule.name || rule.id,
+            }),
+            confirmLabel: t("splitTunnel.confirm.delete"),
+            cancelLabel: t("common.cancel"),
+            danger: true,
+        });
+    };
+
     const handleApply = async () => {
         if (!config || !draft || saving) return;
+        if (validationCount > 0) {
+            setSaveError({
+                code: "split_tunnel_invalid_config",
+                message: t("splitTunnel.rules.fixBeforeSave", { count: validationCount }),
+            });
+            return;
+        }
         if (!(await confirmDestructiveChange())) return;
 
         setSaving(true);
@@ -270,23 +371,58 @@ export const SplitTunnelScreen = () => {
                 mode: draft.mode,
                 defaultAction: draft.defaultAction,
                 killSwitch: draft.killSwitch,
-                exitNodes: (config.exitNodeRules ?? [])
-                    .map((rule) => ({
-                        ruleId: rule.ruleId,
-                        exitNodeId: draft.exitNodes[rule.ruleId] ?? rule.exitNodeId,
-                    }))
-                    .filter((selection) => selection.exitNodeId !== ""),
+                exitNodes: [],
+                rulesChanged: true,
+                rules: draft.rules.map(ruleToInput),
             });
             dirtyRef.current = false;
             setApplied(true);
             await load();
         } catch (e) {
             const code = errorCode(e);
-            setSaveError({ code, message: formatErrorMessage(e) });
+            setSaveError({
+                code,
+                message: formatErrorMessage(e),
+                field: errorField(e),
+            });
             // A conflict leaves the local edits in place; the notice offers an
             // explicit reload so nothing is discarded behind the user's back.
         } finally {
             setSaving(false);
+        }
+    };
+
+    const handleRollback = async (snapshot: RevisionSnapshot) => {
+        if (!config || rollingBack) return;
+        const restore = await confirm({
+            title: t("splitTunnel.recovery.confirmTitle"),
+            description: t("splitTunnel.recovery.confirm", {
+                revision: snapshot.revision,
+                mode: t(`splitTunnel.mode.${snapshot.mode}`),
+            }),
+            confirmLabel: t("splitTunnel.recovery.restore"),
+            cancelLabel: t("common.cancel"),
+            danger: true,
+        });
+        if (!restore) return;
+
+        setRollingBack(true);
+        setSaveError(null);
+        try {
+            await SplitTunnel.Rollback({
+                expectedRevision: config.revision,
+                revision: snapshot.revision,
+            });
+            dirtyRef.current = false;
+            await load();
+        } catch (e) {
+            setSaveError({
+                code: errorCode(e),
+                message: formatErrorMessage(e),
+                field: errorField(e),
+            });
+        } finally {
+            setRollingBack(false);
         }
     };
 
@@ -301,8 +437,12 @@ export const SplitTunnelScreen = () => {
         void load();
     };
 
+    const olderRevisions = revisionHistory.filter(
+        (snapshot) => snapshot.revision !== config?.revision,
+    );
+
     return (
-        <div className={"flex flex-col gap-6"} aria-busy={isLoading || saving}>
+        <div className={"flex flex-col gap-6"} aria-busy={isLoading || saving || rollingBack}>
             <div className={"flex flex-wrap items-start justify-between gap-3"}>
                 <div className={"min-w-0"}>
                     <h1 className={"text-lg font-semibold text-nb-gray-50"}>
@@ -310,16 +450,22 @@ export const SplitTunnelScreen = () => {
                     </h1>
                     <HelpText margin={false}>{t("splitTunnel.description")}</HelpText>
                 </div>
-                <Button
-                    variant={"secondary"}
-                    size={"sm"}
-                    onClick={retry}
-                    loading={loading}
-                    disabled={saving}
-                >
-                    <RefreshCw size={14} aria-hidden={"true"} />
-                    {t("common.refresh")}
-                </Button>
+                <div className={"flex flex-wrap items-center gap-2"}>
+                    {dirty && <Badge variant={"warning"}>{t("splitTunnel.unsaved")}</Badge>}
+                    {status?.restartRequired && (
+                        <Badge variant={"warning"}>{t("splitTunnel.restart.badge")}</Badge>
+                    )}
+                    <Button
+                        variant={"secondary"}
+                        size={"sm"}
+                        onClick={retry}
+                        loading={loading}
+                        disabled={saving || rollingBack}
+                    >
+                        <RefreshCw size={14} aria-hidden={"true"} />
+                        {t("common.refresh")}
+                    </Button>
+                </div>
             </div>
 
             {loadError && unavailable && (
@@ -366,391 +512,556 @@ export const SplitTunnelScreen = () => {
                 </div>
             )}
 
-            {status && (
-                <SectionGroup title={t("splitTunnel.overview.title")}>
-                    <div className={"grid grid-cols-1 gap-3 sm:grid-cols-2"}>
-                        <StatusTile
-                            icon={daemonStatus?.status === "Connected" ? CheckCircle2 : CircleSlash}
-                            label={t("splitTunnel.overview.connection")}
-                            value={
-                                daemonStatus?.status === "Connected"
-                                    ? t("connect.status.connected")
-                                    : daemonStatus?.status === "Connecting"
-                                      ? t("connect.status.connecting")
-                                      : t("connect.status.disconnected")
-                            }
-                        />
-                        <StatusTile
-                            icon={status.running ? CheckCircle2 : CircleSlash}
-                            label={t("splitTunnel.overview.engine")}
-                            value={
-                                status.running
-                                    ? t("splitTunnel.state.running")
-                                    : status.enabled
-                                      ? t("splitTunnel.state.enabledNotRunning")
-                                      : t("splitTunnel.state.stopped")
-                            }
-                            badge={
-                                status.running
-                                    ? t("splitTunnel.badge.running")
-                                    : status.enabled
-                                      ? t("splitTunnel.badge.degraded")
-                                      : t("splitTunnel.badge.stopped")
-                            }
-                            tone={
-                                status.running ? "success" : status.enabled ? "warning" : "neutral"
-                            }
-                        />
-                        <StatusTile
-                            icon={Route}
-                            label={t("splitTunnel.overview.mode")}
-                            value={t(`splitTunnel.mode.${modeFrom(status.mode)}`)}
-                        />
-                        <StatusTile
-                            icon={Route}
-                            label={t("splitTunnel.overview.exitNode")}
-                            value={exitNodeSummary || t("splitTunnel.exitNodes.noneSelected")}
-                        />
-                        <StatusTile
-                            icon={
-                                (config?.killSwitch ?? "disabled") === "disabled"
-                                    ? ShieldOff
-                                    : ShieldCheck
-                            }
-                            label={t("splitTunnel.overview.killSwitch")}
-                            value={t(
-                                `splitTunnel.killSwitch.${killSwitchFrom(config?.killSwitch ?? "")}`,
-                            )}
-                            badge={
-                                killSwitchFrom(config?.killSwitch ?? "") === "disabled"
-                                    ? t("splitTunnel.badge.off")
-                                    : t("splitTunnel.badge.on")
-                            }
-                            tone={
-                                killSwitchFrom(config?.killSwitch ?? "") === "disabled"
-                                    ? "neutral"
-                                    : "success"
-                            }
-                        />
-                        <StatusTile
-                            icon={backendDegraded ? AlertTriangle : CheckCircle2}
-                            label={t("splitTunnel.overview.backend")}
-                            value={status.backend || t("splitTunnel.state.backendUnavailable")}
-                            badge={
-                                backendDegraded
-                                    ? t("splitTunnel.badge.degraded")
-                                    : t("splitTunnel.badge.healthy")
-                            }
-                            tone={backendDegraded ? "warning" : "success"}
-                        />
-                    </div>
-
-                    {status.degraded && <DegradedNotice checks={status.degradedChecks} />}
-
-                    {status.diagnosticsRedacted && (
-                        <InlineNotice
-                            tone={"info"}
-                            icon={Info}
-                            title={t("splitTunnel.diagnostics.restrictedTitle")}
-                        >
-                            <p>{t("splitTunnel.diagnostics.restricted")}</p>
-                        </InlineNotice>
-                    )}
-
-                    {status.diagnostics && Object.keys(status.diagnostics).length > 0 && (
-                        <details
-                            className={
-                                "rounded-lg border border-nb-gray-850 bg-nb-gray-935 px-4 py-3 text-sm"
-                            }
-                        >
-                            <summary
-                                className={
-                                    "cursor-pointer font-medium text-nb-gray-100 outline-hidden focus-visible:ring-2 focus-visible:ring-nb-gray-50/60"
-                                }
-                            >
-                                {t("splitTunnel.diagnostics.title")}
-                            </summary>
-                            <dl className={"mt-3 grid grid-cols-1 gap-2"}>
-                                {Object.entries(status.diagnostics).map(([key, value]) => (
-                                    <div
-                                        key={key}
-                                        className={"flex flex-wrap items-baseline gap-x-3 gap-y-1"}
-                                    >
-                                        <dt
-                                            className={"min-w-0 font-mono text-xs text-nb-gray-400"}
-                                        >
-                                            {key}
-                                        </dt>
-                                        <dd
-                                            className={"min-w-0 text-xs break-all text-nb-gray-200"}
-                                        >
-                                            {value}
-                                        </dd>
-                                    </div>
-                                ))}
-                            </dl>
-                        </details>
-                    )}
-                </SectionGroup>
+            {status?.restartRequired && (
+                <InlineNotice
+                    tone={"warning"}
+                    icon={AlertTriangle}
+                    title={t("splitTunnel.restart.title")}
+                >
+                    <p>{t("splitTunnel.restart.description")}</p>
+                </InlineNotice>
             )}
 
-            {config && draft && canEdit && (
-                <SectionGroup title={t("splitTunnel.settings.title")}>
-                    <FancyToggleSwitch
-                        value={draft.enabled}
-                        onChange={(enabled) => updateDraft((current) => ({ ...current, enabled }))}
-                        disabled={draft.mode === "standard" || saving}
-                        label={t("splitTunnel.settings.enabled.label")}
-                        helpText={
-                            draft.mode === "standard"
-                                ? t("splitTunnel.settings.enabled.chooseMode")
-                                : t("splitTunnel.settings.enabled.help")
-                        }
+            {config && !config.exists && (
+                <InlineNotice tone={"info"} icon={Info} title={t("splitTunnel.firstRun.title")}>
+                    <p>{t("splitTunnel.firstRun.description")}</p>
+                </InlineNotice>
+            )}
+
+            <Tabs.Root defaultValue={"overview"} className={"flex flex-col gap-4"}>
+                <Tabs.List
+                    aria-label={t("splitTunnel.tabs.label")}
+                    className={
+                        "flex flex-wrap gap-1 rounded-lg border border-nb-gray-850 bg-nb-gray-935 p-1"
+                    }
+                >
+                    <TabTrigger
+                        value={"overview"}
+                        icon={LayoutDashboard}
+                        label={t("splitTunnel.tabs.overview")}
                     />
+                    <TabTrigger
+                        value={"rules"}
+                        icon={ListChecks}
+                        label={t("splitTunnel.tabs.rules")}
+                    />
+                    <TabTrigger
+                        value={"activity"}
+                        icon={Activity}
+                        label={t("splitTunnel.tabs.activity")}
+                    />
+                    <TabTrigger
+                        value={"diagnostics"}
+                        icon={Stethoscope}
+                        label={t("splitTunnel.tabs.diagnostics")}
+                    />
+                </Tabs.List>
 
-                    <div>
-                        <Label as={"div"}>{t("splitTunnel.settings.mode.label")}</Label>
-                        <HelpText>{t("splitTunnel.settings.mode.help")}</HelpText>
-                        <Select
-                            value={draft.mode}
-                            ariaLabel={t("splitTunnel.settings.mode.label")}
-                            disabled={saving}
-                            onChange={handleMode}
-                            options={MODES.map((mode) => ({
-                                value: mode,
-                                label: t(`splitTunnel.mode.${mode}`),
-                            }))}
-                        />
-                    </div>
+                <Tabs.Content value={"overview"} className={"flex flex-col gap-5 outline-hidden"}>
+                    {status && (
+                        <SectionGroup title={t("splitTunnel.overview.title")}>
+                            <div className={"grid grid-cols-1 gap-3 sm:grid-cols-2"}>
+                                <StatusTile
+                                    icon={
+                                        daemonStatus?.status === "Connected"
+                                            ? CheckCircle2
+                                            : CircleSlash
+                                    }
+                                    label={t("splitTunnel.overview.connection")}
+                                    value={
+                                        daemonStatus?.status === "Connected"
+                                            ? t("connect.status.connected")
+                                            : daemonStatus?.status === "Connecting"
+                                              ? t("connect.status.connecting")
+                                              : t("connect.status.disconnected")
+                                    }
+                                />
+                                <StatusTile
+                                    icon={status.running ? CheckCircle2 : CircleSlash}
+                                    label={t("splitTunnel.overview.engine")}
+                                    value={
+                                        status.running
+                                            ? t("splitTunnel.state.running")
+                                            : status.enabled
+                                              ? t("splitTunnel.state.enabledNotRunning")
+                                              : t("splitTunnel.state.stopped")
+                                    }
+                                    badge={
+                                        status.running
+                                            ? t("splitTunnel.badge.running")
+                                            : status.enabled
+                                              ? t("splitTunnel.badge.degraded")
+                                              : t("splitTunnel.badge.stopped")
+                                    }
+                                    tone={
+                                        status.running
+                                            ? "success"
+                                            : status.enabled
+                                              ? "warning"
+                                              : "neutral"
+                                    }
+                                />
+                                <StatusTile
+                                    icon={Route}
+                                    label={t("splitTunnel.overview.mode")}
+                                    value={t(`splitTunnel.mode.${modeFrom(status.mode)}`)}
+                                />
+                                <StatusTile
+                                    icon={Route}
+                                    label={t("splitTunnel.overview.exitNode")}
+                                    value={
+                                        exitNodeSummary || t("splitTunnel.exitNodes.noneSelected")
+                                    }
+                                />
+                                <StatusTile
+                                    icon={
+                                        (draft?.killSwitch ?? "disabled") === "disabled"
+                                            ? ShieldOff
+                                            : ShieldCheck
+                                    }
+                                    label={t("splitTunnel.overview.killSwitch")}
+                                    value={t(
+                                        `splitTunnel.killSwitch.${killSwitchFrom(draft?.killSwitch ?? "")}`,
+                                    )}
+                                    badge={
+                                        killSwitchFrom(draft?.killSwitch ?? "") === "disabled"
+                                            ? t("splitTunnel.badge.off")
+                                            : t("splitTunnel.badge.on")
+                                    }
+                                    tone={
+                                        killSwitchFrom(draft?.killSwitch ?? "") === "disabled"
+                                            ? "neutral"
+                                            : "success"
+                                    }
+                                />
+                                <StatusTile
+                                    icon={backendDegraded ? AlertTriangle : CheckCircle2}
+                                    label={t("splitTunnel.overview.backend")}
+                                    value={
+                                        status.backend || t("splitTunnel.state.backendUnavailable")
+                                    }
+                                    badge={
+                                        backendDegraded
+                                            ? t("splitTunnel.badge.degraded")
+                                            : t("splitTunnel.badge.healthy")
+                                    }
+                                    tone={backendDegraded ? "warning" : "success"}
+                                />
+                            </div>
 
-                    {draft.mode === "custom" && (
-                        <div>
-                            <Label as={"div"}>
-                                {t("splitTunnel.settings.defaultAction.label")}
-                            </Label>
-                            <HelpText>{t("splitTunnel.settings.defaultAction.help")}</HelpText>
-                            <Select
-                                value={draft.defaultAction}
-                                ariaLabel={t("splitTunnel.settings.defaultAction.label")}
-                                disabled={saving}
-                                onChange={(defaultAction) =>
-                                    updateDraft((current) => ({
-                                        ...current,
-                                        defaultAction: defaultAction as DefaultAction,
-                                    }))
-                                }
-                                options={DEFAULT_ACTIONS.map((action) => ({
-                                    value: action,
-                                    label: t(`splitTunnel.defaultAction.${action}`),
-                                }))}
-                            />
-                        </div>
+                            {status.degraded && <DegradedNotice checks={status.degradedChecks} />}
+                        </SectionGroup>
                     )}
 
-                    <div>
-                        <Label as={"div"}>{t("splitTunnel.settings.killSwitch.label")}</Label>
-                        <HelpText>{t("splitTunnel.settings.killSwitch.help")}</HelpText>
-                        <Select
-                            value={draft.killSwitch}
-                            ariaLabel={t("splitTunnel.settings.killSwitch.label")}
-                            disabled={saving}
-                            onChange={(killSwitch) =>
-                                updateDraft((current) => ({
-                                    ...current,
-                                    killSwitch: killSwitch as KillSwitch,
-                                }))
-                            }
-                            options={KILL_SWITCHES.map((killSwitch) => ({
-                                value: killSwitch,
-                                label: t(`splitTunnel.killSwitch.${killSwitch}`),
-                            }))}
-                        />
-                        {draft.killSwitch !== "disabled" && !draft.enabled && (
-                            <HelpText className={"mt-2 text-yellow-700 dark:text-yellow-300"}>
-                                {t("splitTunnel.settings.killSwitch.inactive")}
-                            </HelpText>
-                        )}
-                    </div>
-
-                    <div>
-                        <Label as={"div"}>{t("splitTunnel.exitNodes.label")}</Label>
-                        <HelpText>{t("splitTunnel.exitNodes.help")}</HelpText>
-                        {config.exitNodeRules.length === 0 ? (
-                            <div
-                                className={
-                                    "rounded-lg border border-dashed border-nb-gray-700 px-4 py-3 text-sm text-nb-gray-300"
+                    {config && draft && canEdit && (
+                        <SectionGroup title={t("splitTunnel.settings.title")}>
+                            <FancyToggleSwitch
+                                value={draft.enabled}
+                                onChange={(enabled) =>
+                                    updateDraft((current) => ({ ...current, enabled }))
                                 }
-                            >
-                                {t("splitTunnel.exitNodes.noRules")}
+                                disabled={draft.mode === "standard" || disabled}
+                                label={t("splitTunnel.settings.enabled.label")}
+                                helpText={
+                                    draft.mode === "standard"
+                                        ? t("splitTunnel.settings.enabled.chooseMode")
+                                        : t("splitTunnel.settings.enabled.help")
+                                }
+                            />
+
+                            <div>
+                                <Label as={"div"}>{t("splitTunnel.settings.mode.label")}</Label>
+                                <HelpText>{t("splitTunnel.settings.mode.help")}</HelpText>
+                                <Select
+                                    value={draft.mode}
+                                    ariaLabel={t("splitTunnel.settings.mode.label")}
+                                    disabled={disabled}
+                                    onChange={(mode) => handleMode(mode as Mode)}
+                                    options={MODES.map((mode) => ({
+                                        value: mode,
+                                        label: t(`splitTunnel.mode.${mode}`),
+                                    }))}
+                                />
                             </div>
-                        ) : (
-                            <div className={"flex flex-col gap-3"}>
-                                {config.exitNodeRules.map((rule) => {
-                                    const current = draft.exitNodes[rule.ruleId] || rule.exitNodeId;
-                                    const options = current
-                                        ? exitNodeOptions.some((option) => option.value === current)
-                                            ? exitNodeOptions
-                                            : [
-                                                  { value: current, label: current },
-                                                  ...exitNodeOptions,
-                                              ]
-                                        : exitNodeOptions;
-                                    return (
+
+                            {draft.mode === "custom" && (
+                                <div>
+                                    <Label as={"div"}>
+                                        {t("splitTunnel.settings.defaultAction.label")}
+                                    </Label>
+                                    <HelpText>
+                                        {t("splitTunnel.settings.defaultAction.help")}
+                                    </HelpText>
+                                    <Select
+                                        value={draft.defaultAction}
+                                        ariaLabel={t("splitTunnel.settings.defaultAction.label")}
+                                        disabled={disabled}
+                                        onChange={(defaultAction) =>
+                                            updateDraft((current) => ({
+                                                ...current,
+                                                defaultAction: defaultAction as DefaultAction,
+                                            }))
+                                        }
+                                        options={DEFAULT_ACTIONS.map((action) => ({
+                                            value: action,
+                                            label: t(`splitTunnel.defaultAction.${action}`),
+                                        }))}
+                                    />
+                                </div>
+                            )}
+
+                            <div>
+                                <Label as={"div"}>
+                                    {t("splitTunnel.settings.killSwitch.label")}
+                                </Label>
+                                <HelpText>{t("splitTunnel.settings.killSwitch.help")}</HelpText>
+                                <Select
+                                    value={draft.killSwitch}
+                                    ariaLabel={t("splitTunnel.settings.killSwitch.label")}
+                                    disabled={disabled}
+                                    onChange={(killSwitch) =>
+                                        updateDraft((current) => ({
+                                            ...current,
+                                            killSwitch: killSwitch as KillSwitch,
+                                        }))
+                                    }
+                                    options={KILL_SWITCHES.map((killSwitch) => ({
+                                        value: killSwitch,
+                                        label: t(`splitTunnel.killSwitch.${killSwitch}`),
+                                    }))}
+                                />
+                                {draft.killSwitch !== "disabled" && !draft.enabled && (
+                                    <HelpText
+                                        className={"mt-2 text-yellow-700 dark:text-yellow-300"}
+                                    >
+                                        {t("splitTunnel.settings.killSwitch.inactive")}
+                                    </HelpText>
+                                )}
+                            </div>
+
+                            <div>
+                                <Label as={"div"}>{t("splitTunnel.exitNodes.label")}</Label>
+                                <HelpText>{t("splitTunnel.exitNodes.help")}</HelpText>
+                                {exitNodeRules.length === 0 ? (
+                                    <div
+                                        className={
+                                            "rounded-lg border border-dashed border-nb-gray-700 px-4 py-3 text-sm text-nb-gray-300"
+                                        }
+                                    >
+                                        {t("splitTunnel.exitNodes.noRules")}
+                                    </div>
+                                ) : (
+                                    <div className={"flex flex-col gap-3"}>
+                                        {exitNodeRules.map((rule) => {
+                                            const current = rule.exitNodeId;
+                                            const options = current
+                                                ? exitNodeOptions.some(
+                                                      (option) => option.value === current,
+                                                  )
+                                                    ? exitNodeOptions
+                                                    : [
+                                                          { value: current, label: current },
+                                                          ...exitNodeOptions,
+                                                      ]
+                                                : exitNodeOptions;
+                                            return (
+                                                <div
+                                                    key={rule.key}
+                                                    className={
+                                                        "flex flex-col gap-2 rounded-lg border border-nb-gray-850 bg-nb-gray-935 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                                                    }
+                                                >
+                                                    <div
+                                                        className={
+                                                            "truncate text-sm font-medium text-nb-gray-100"
+                                                        }
+                                                    >
+                                                        {rule.label}
+                                                    </div>
+                                                    {options.length > 0 ? (
+                                                        <Select
+                                                            value={current || options[0].value}
+                                                            ariaLabel={t(
+                                                                "splitTunnel.exitNodes.selectFor",
+                                                                { rule: rule.label },
+                                                            )}
+                                                            disabled={disabled}
+                                                            onChange={(value) =>
+                                                                handleExitNode(rule.key, value)
+                                                            }
+                                                            options={options}
+                                                            className={"sm:min-w-[220px]"}
+                                                        />
+                                                    ) : (
+                                                        <div className={"text-xs text-nb-gray-300"}>
+                                                            {t("splitTunnel.exitNodes.unavailable")}
+                                                        </div>
+                                                    )}
+                                                </div>
+                                            );
+                                        })}
+                                    </div>
+                                )}
+                            </div>
+
+                            {saveError && (
+                                <SaveErrorNotice error={saveError} onReload={reloadDiscard} />
+                            )}
+
+                            {applied && !saveError && <AppliedNotice />}
+                        </SectionGroup>
+                    )}
+                </Tabs.Content>
+
+                <Tabs.Content value={"rules"} className={"flex flex-col gap-5 outline-hidden"}>
+                    {draft && canEdit && (
+                        <>
+                            {rulesUnavailable && (
+                                <InlineNotice
+                                    tone={"warning"}
+                                    icon={Info}
+                                    title={t("splitTunnel.rules.conflictsUnavailableTitle")}
+                                >
+                                    <p>{t("splitTunnel.rules.conflictsUnavailable")}</p>
+                                    {rulesError?.message && (
+                                        <p className={"mt-1 font-mono text-xs break-all"}>
+                                            {rulesError.message}
+                                        </p>
+                                    )}
+                                </InlineNotice>
+                            )}
+                            {rulesError && !rulesUnavailable && (
+                                <InlineNotice
+                                    tone={"warning"}
+                                    icon={AlertTriangle}
+                                    title={t("splitTunnel.rules.conflictsErrorTitle")}
+                                    action={
+                                        <Button
+                                            variant={"secondary"}
+                                            size={"sm"}
+                                            onClick={() => void loadRules()}
+                                        >
+                                            {t("common.refresh")}
+                                        </Button>
+                                    }
+                                >
+                                    <p>{rulesError.message}</p>
+                                </InlineNotice>
+                            )}
+                            {rulesResult && config && rulesResult.revision !== config.revision && (
+                                <InlineNotice
+                                    tone={"warning"}
+                                    icon={AlertTriangle}
+                                    title={t("splitTunnel.rules.staleConflictsTitle")}
+                                >
+                                    <p>{t("splitTunnel.rules.staleConflicts")}</p>
+                                </InlineNotice>
+                            )}
+                            {appsError && (
+                                <InlineNotice
+                                    tone={"info"}
+                                    icon={Info}
+                                    title={t("splitTunnel.rules.appsUnavailableTitle")}
+                                >
+                                    <p>{t("splitTunnel.rules.appsUnavailable")}</p>
+                                </InlineNotice>
+                            )}
+                            {draft.mode === "standard" && (
+                                <InlineNotice
+                                    tone={"info"}
+                                    icon={Info}
+                                    title={t("splitTunnel.rules.standardTitle")}
+                                >
+                                    <p>{t("splitTunnel.rules.standardHelp")}</p>
+                                </InlineNotice>
+                            )}
+                            <SectionGroup title={t("splitTunnel.rules.title")}>
+                                <RuleEditor
+                                    rules={draft.rules}
+                                    unsupportedRules={unsupportedRules}
+                                    conflicts={conflicts}
+                                    apps={apps}
+                                    appsRedacted={appsRedacted}
+                                    exitNodes={exitNodeOptions}
+                                    mode={draft.mode}
+                                    disabled={disabled || draft.mode === "standard"}
+                                    fieldError={saveError?.field ?? ""}
+                                    onChange={(rules) =>
+                                        updateDraft((current) => ({ ...current, rules }))
+                                    }
+                                    onRequestDelete={confirmRuleDelete}
+                                />
+                            </SectionGroup>
+                            {saveError && (
+                                <SaveErrorNotice error={saveError} onReload={reloadDiscard} />
+                            )}
+                        </>
+                    )}
+                </Tabs.Content>
+
+                <Tabs.Content value={"activity"} className={"flex flex-col gap-5 outline-hidden"}>
+                    <SectionGroup title={t("splitTunnel.activity.title")}>
+                        <ActivityPanel />
+                    </SectionGroup>
+                </Tabs.Content>
+
+                <Tabs.Content
+                    value={"diagnostics"}
+                    className={"flex flex-col gap-5 outline-hidden"}
+                >
+                    {status && (
+                        <DiagnosticsLayout status={status}>
+                            <SectionGroup title={t("splitTunnel.statistics.title")}>
+                                <StatisticsPanel status={status} />
+                            </SectionGroup>
+                            <SectionGroup title={t("splitTunnel.dns.title")}>
+                                <DNSPanel status={status} />
+                            </SectionGroup>
+                            <SectionGroup title={t("splitTunnel.troubleshooting.title")}>
+                                <TroubleshootingPanel />
+                            </SectionGroup>
+                            <SectionGroup title={t("splitTunnel.support.title")}>
+                                <SupportBundlePanel />
+                            </SectionGroup>
+                            <SectionGroup title={t("splitTunnel.recovery.title")}>
+                                <div className={"flex flex-col gap-3"}>
+                                    <HelpText margin={false}>
+                                        {t("splitTunnel.recovery.description")}
+                                    </HelpText>
+                                    <p className={"font-mono text-xs break-all text-nb-gray-400"}>
+                                        {t("splitTunnel.recovery.missingApi")}
+                                    </p>
+                                    {olderRevisions.length === 0 ? (
                                         <div
-                                            key={rule.ruleId}
                                             className={
-                                                "flex flex-col gap-2 rounded-lg border border-nb-gray-850 bg-nb-gray-935 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                                                "rounded-lg border border-dashed border-nb-gray-700 px-4 py-3 text-sm text-nb-gray-300"
                                             }
                                         >
-                                            <div className={"min-w-0"}>
-                                                <div
-                                                    className={
-                                                        "truncate text-sm font-medium text-nb-gray-100"
-                                                    }
-                                                >
-                                                    {rule.name || rule.ruleId}
-                                                </div>
-                                                <div
-                                                    className={
-                                                        "truncate font-mono text-xs text-nb-gray-400"
-                                                    }
-                                                >
-                                                    {rule.ruleId}
-                                                </div>
-                                            </div>
-                                            {options.length > 0 ? (
-                                                <Select
-                                                    value={current || options[0].value}
-                                                    ariaLabel={t(
-                                                        "splitTunnel.exitNodes.selectFor",
-                                                        {
-                                                            rule: rule.name || rule.ruleId,
-                                                        },
-                                                    )}
-                                                    disabled={saving}
-                                                    onChange={(value) =>
-                                                        handleExitNode(rule, value)
-                                                    }
-                                                    options={options}
-                                                    className={"sm:min-w-[220px]"}
-                                                />
-                                            ) : (
-                                                <div className={"text-xs text-nb-gray-300"}>
-                                                    {t("splitTunnel.exitNodes.unavailable")}
-                                                </div>
-                                            )}
+                                            {t("splitTunnel.recovery.empty")}
                                         </div>
-                                    );
-                                })}
-                            </div>
-                        )}
-                    </div>
-
-                    {saveError && (
-                        <InlineNotice
-                            tone={
-                                saveError.code === "split_tunnel_mutation_denied"
-                                    ? "warning"
-                                    : "danger"
-                            }
-                            icon={AlertTriangle}
-                            title={
-                                saveError.code === "split_tunnel_revision_conflict"
-                                    ? t("splitTunnel.error.conflictTitle")
-                                    : saveError.code === "split_tunnel_mutation_denied"
-                                      ? t("splitTunnel.error.permissionTitle")
-                                      : t("splitTunnel.error.saveTitle")
-                            }
-                            action={
-                                saveError.code === "split_tunnel_revision_conflict" ? (
-                                    <Button
-                                        variant={"secondary"}
-                                        size={"sm"}
-                                        onClick={reloadDiscard}
-                                    >
-                                        {t("splitTunnel.error.reload")}
-                                    </Button>
-                                ) : undefined
-                            }
-                        >
-                            <p className={"break-words"}>{saveError.message}</p>
-                            {saveError.code === "split_tunnel_revision_conflict" && (
-                                <p className={"mt-1"}>{t("splitTunnel.error.conflictHint")}</p>
-                            )}
-                        </InlineNotice>
+                                    ) : (
+                                        <ul className={"flex flex-col gap-2"}>
+                                            {olderRevisions.map((snapshot) => (
+                                                <li
+                                                    key={snapshot.revision}
+                                                    className={
+                                                        "flex flex-wrap items-center justify-between gap-3 rounded-lg border border-nb-gray-850 bg-nb-gray-935 px-4 py-3"
+                                                    }
+                                                >
+                                                    <div className={"min-w-0"}>
+                                                        <div className={"text-sm text-nb-gray-100"}>
+                                                            {t("splitTunnel.recovery.revision", {
+                                                                revision: snapshot.revision,
+                                                                mode: t(
+                                                                    `splitTunnel.mode.${snapshot.mode}`,
+                                                                ),
+                                                            })}
+                                                        </div>
+                                                        <div className={"text-xs text-nb-gray-400"}>
+                                                            {t("splitTunnel.recovery.seenAt", {
+                                                                time: new Date(
+                                                                    snapshot.at,
+                                                                ).toLocaleString(),
+                                                            })}
+                                                        </div>
+                                                    </div>
+                                                    <Button
+                                                        variant={"secondary"}
+                                                        size={"sm"}
+                                                        disabled={disabled}
+                                                        onClick={() =>
+                                                            void handleRollback(snapshot)
+                                                        }
+                                                    >
+                                                        <RotateCcw size={13} aria-hidden={"true"} />
+                                                        {t("splitTunnel.recovery.restore")}
+                                                    </Button>
+                                                </li>
+                                            ))}
+                                        </ul>
+                                    )}
+                                </div>
+                            </SectionGroup>
+                        </DiagnosticsLayout>
                     )}
+                </Tabs.Content>
+            </Tabs.Root>
 
-                    {applied && !saveError && (
-                        <div
-                            role={"status"}
-                            aria-live={"polite"}
-                            className={
-                                "flex items-center gap-2 rounded-lg border border-green-300 bg-green-100 px-4 py-3 text-sm text-green-800 dark:border-green-700 dark:bg-green-900 dark:text-green-200"
-                            }
-                        >
-                            <CheckCircle2 size={16} aria-hidden={"true"} />
-                            {t("splitTunnel.applied")}
-                        </div>
-                    )}
-
-                    <div
-                        className={
-                            "flex flex-wrap items-center justify-between gap-3 border-t border-nb-gray-850 pt-4"
-                        }
-                    >
-                        <div className={"text-xs text-nb-gray-300"} aria-live={"polite"}>
-                            {dirty ? t("splitTunnel.unsaved") : t("splitTunnel.saved")}
-                        </div>
-                        <div className={"flex flex-wrap justify-end gap-3"}>
-                            <Button
-                                variant={"secondary"}
-                                size={"md"}
-                                onClick={handleDiscard}
-                                disabled={!dirty || saving}
-                            >
-                                {t("splitTunnel.discard")}
-                            </Button>
-                            <Button
-                                variant={"primary"}
-                                size={"md"}
-                                onClick={() => void handleApply()}
-                                loading={saving}
-                                disabled={!dirty || saving}
-                            >
-                                {t("common.saveChanges")}
-                            </Button>
-                        </div>
+            {config && draft && canEdit && (
+                <div
+                    className={
+                        "flex flex-wrap items-center justify-between gap-3 border-t border-nb-gray-850 pt-4"
+                    }
+                >
+                    <div className={"text-xs text-nb-gray-300"} aria-live={"polite"}>
+                        {validationCount > 0
+                            ? t("splitTunnel.rules.fixBeforeSave", { count: validationCount })
+                            : dirty
+                              ? t("splitTunnel.unsaved")
+                              : t("splitTunnel.saved")}
                     </div>
-                </SectionGroup>
+                    <div className={"flex flex-wrap justify-end gap-3"}>
+                        <Button
+                            variant={"secondary"}
+                            size={"md"}
+                            onClick={handleDiscard}
+                            disabled={!dirty || saving || rollingBack}
+                        >
+                            {t("splitTunnel.discard")}
+                        </Button>
+                        <Button
+                            variant={"primary"}
+                            size={"md"}
+                            onClick={() => void handleApply()}
+                            loading={saving}
+                            disabled={!dirty || saving || rollingBack || validationCount > 0}
+                        >
+                            {t("common.saveChanges")}
+                        </Button>
+                    </div>
+                </div>
             )}
-
-            <SectionGroup title={t("splitTunnel.upcoming.title")}>
-                <UpcomingFeature
-                    title={t("splitTunnel.upcoming.rulesTitle")}
-                    description={t("splitTunnel.upcoming.rulesDescription")}
-                />
-                <UpcomingFeature
-                    title={t("splitTunnel.upcoming.dnsTitle")}
-                    description={t("splitTunnel.upcoming.dnsDescription")}
-                />
-                <UpcomingFeature
-                    title={t("splitTunnel.upcoming.supportTitle")}
-                    description={t("splitTunnel.upcoming.supportDescription")}
-                />
-            </SectionGroup>
         </div>
     );
 };
 
-type StatusTileProps = {
+const TabTrigger = ({
+    value,
+    icon: Icon,
+    label,
+}: {
+    value: string;
+    icon: typeof LayoutDashboard;
+    label: string;
+}) => (
+    <Tabs.Trigger
+        value={value}
+        className={cn(
+            "inline-flex cursor-default items-center gap-2 rounded-md px-3 py-2 text-sm font-medium outline-hidden",
+            "text-nb-gray-300 transition-colors hover:bg-nb-gray-900 hover:text-nb-gray-100",
+            "data-[state=active]:bg-white data-[state=active]:text-nb-gray-900",
+            "dark:data-[state=active]:bg-nb-gray-930 dark:data-[state=active]:text-nb-gray-100",
+            "focus-visible:ring-2 focus-visible:ring-nb-gray-50/60 focus-visible:ring-offset-2 focus-visible:ring-offset-nb-gray-940",
+        )}
+    >
+        <Icon size={15} aria-hidden={"true"} />
+        {label}
+    </Tabs.Trigger>
+);
+
+const StatusTile = ({
+    icon: Icon,
+    label,
+    value,
+    badge,
+    tone = "neutral",
+}: {
     icon: typeof CheckCircle2;
     label: string;
     value: string;
     badge?: string;
     tone?: "neutral" | "success" | "warning";
-};
-
-const StatusTile = ({ icon: Icon, label, value, badge, tone = "neutral" }: StatusTileProps) => (
+}) => (
     <div
         className={
             "flex min-w-0 items-start gap-3 rounded-lg border border-nb-gray-850 bg-nb-gray-935 px-4 py-3"
@@ -800,7 +1111,7 @@ const InlineNotice = ({
     icon: typeof Info;
     title: string;
     action?: ReactNode;
-    children: ReactNode;
+    children?: ReactNode;
 }) => (
     <div
         role={tone === "danger" ? "alert" : "status"}
@@ -819,7 +1130,7 @@ const InlineNotice = ({
                 <Icon size={16} className={"mt-0.5 shrink-0"} aria-hidden={"true"} />
                 <div className={"min-w-0"}>
                     <div className={"font-semibold"}>{title}</div>
-                    <div className={"mt-1 text-sm"}>{children}</div>
+                    {children && <div className={"mt-1 text-sm"}>{children}</div>}
                 </div>
             </div>
             {action}
@@ -853,26 +1164,55 @@ const DegradedNotice = ({ checks }: { checks: SplitTunnelStatus["degradedChecks"
     );
 };
 
-const UpcomingFeature = ({ title, description }: { title: string; description: string }) => {
+const SaveErrorNotice = ({ error, onReload }: { error: ServiceError; onReload: () => void }) => {
+    const { t } = useTranslation();
+    return (
+        <InlineNotice
+            tone={
+                error.code === "split_tunnel_mutation_denied" ||
+                error.code === "split_tunnel_invalid_config"
+                    ? "warning"
+                    : "danger"
+            }
+            icon={AlertTriangle}
+            title={
+                error.code === "split_tunnel_revision_conflict"
+                    ? t("splitTunnel.error.conflictTitle")
+                    : error.code === "split_tunnel_mutation_denied"
+                      ? t("splitTunnel.error.permissionTitle")
+                      : error.code === "split_tunnel_invalid_config"
+                        ? t("splitTunnel.error.validationTitle")
+                        : t("splitTunnel.error.saveTitle")
+            }
+            action={
+                error.code === "split_tunnel_revision_conflict" ? (
+                    <Button variant={"secondary"} size={"sm"} onClick={onReload}>
+                        {t("splitTunnel.error.reload")}
+                    </Button>
+                ) : undefined
+            }
+        >
+            <p className={"break-words"}>{error.message}</p>
+            {error.code === "split_tunnel_revision_conflict" && (
+                <p className={"mt-1"}>{t("splitTunnel.error.conflictHint")}</p>
+            )}
+            {error.field && <p className={"mt-1 font-mono text-xs break-all"}>{error.field}</p>}
+        </InlineNotice>
+    );
+};
+
+const AppliedNotice = () => {
     const { t } = useTranslation();
     return (
         <div
+            role={"status"}
+            aria-live={"polite"}
             className={
-                "flex flex-col gap-2 rounded-lg border border-dashed border-nb-gray-700 px-4 py-3 sm:flex-row sm:items-center sm:justify-between"
+                "flex items-center gap-2 rounded-lg border border-green-300 bg-green-100 px-4 py-3 text-sm text-green-800 dark:border-green-700 dark:bg-green-900 dark:text-green-200"
             }
         >
-            <div className={"min-w-0"}>
-                <div className={"text-sm font-medium text-nb-gray-100"}>{title}</div>
-                <HelpText margin={false}>{description}</HelpText>
-            </div>
-            <Button
-                variant={"secondary"}
-                size={"sm"}
-                disabled
-                title={t("splitTunnel.upcoming.unavailableHint")}
-            >
-                {t("splitTunnel.upcoming.comingSoon")}
-            </Button>
+            <CheckCircle2 size={16} aria-hidden={"true"} />
+            {t("splitTunnel.applied")}
         </div>
     );
 };

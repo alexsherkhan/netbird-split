@@ -2410,5 +2410,733 @@
     "error.split_tunnel_rule_not_found": {
         "message": "The split tunnel rule no longer exists.",
         "description": "Short error headline when an exit node selection names a rule the daemon no longer has."
+    },
+    "splitTunnel.tabs.label": {
+        "message": "Split tunnel views",
+        "description": "Accessible label for the split tunnel view tabs."
+    },
+    "splitTunnel.tabs.overview": {
+        "message": "Overview",
+        "description": "Tab that shows split tunnel status and settings."
+    },
+    "splitTunnel.tabs.rules": {
+        "message": "Rules",
+        "description": "Tab that edits split tunnel rules."
+    },
+    "splitTunnel.tabs.activity": {
+        "message": "Activity",
+        "description": "Tab that shows the retained split tunnel event log."
+    },
+    "splitTunnel.tabs.diagnostics": {
+        "message": "Diagnostics",
+        "description": "Tab that shows statistics, DNS state and troubleshooting."
+    },
+    "splitTunnel.firstRun.title": {
+        "message": "No configuration yet",
+        "description": "Notice title on a first run before any split tunnel configuration exists."
+    },
+    "splitTunnel.firstRun.description": {
+        "message": "Choose a mode and save to create the first configuration. Nothing is applied until you save.",
+        "description": "Notice body on a first run."
+    },
+    "splitTunnel.restart.badge": {
+        "message": "Restart required",
+        "description": "Badge shown when the saved configuration enables split tunneling but the engine is not running."
+    },
+    "splitTunnel.restart.title": {
+        "message": "Restart required",
+        "description": "Notice title when the saved configuration is enabled but the engine is not running."
+    },
+    "splitTunnel.restart.description": {
+        "message": "The configuration enables split tunneling but the engine reports it is not running. Restart the NetBird service, then refresh this screen.",
+        "description": "Notice body explaining how to recover an enabled but stopped engine."
+    },
+    "splitTunnel.error.validationTitle": {
+        "message": "Check the rule fields",
+        "description": "Error title when the local rule editor found problems before saving."
+    },
+    "splitTunnel.confirm.blockDefault": {
+        "message": "Unmatched traffic will be blocked. Continue?",
+        "description": "Confirmation when custom mode changes its default action to block."
+    },
+    "splitTunnel.confirm.delete": {
+        "message": "Delete",
+        "description": "Confirm button for deleting a rule."
+    },
+    "splitTunnel.confirm.ruleDeleteTitle": {
+        "message": "Delete this rule?",
+        "description": "Title of the rule deletion confirmation."
+    },
+    "splitTunnel.confirm.ruleDelete": {
+        "message": "Rule {rule} will be removed. Traffic it matched will fall back to the mode default. Continue?",
+        "description": "Confirmation body for deleting a rule. {rule} is its name or ID."
+    },
+    "splitTunnel.rules.title": {
+        "message": "Rules",
+        "description": "Section title for the rule editor."
+    },
+    "splitTunnel.rules.description": {
+        "message": "Rules are evaluated by priority. Lower numbers take precedence. Rules this version does not understand are shown as preserved and are never rewritten.",
+        "description": "Introductory text for the rule editor."
+    },
+    "splitTunnel.rules.add": {
+        "message": "Add rule",
+        "description": "Button that adds a rule to the draft."
+    },
+    "splitTunnel.rules.empty": {
+        "message": "No rules yet. Add a rule to select applications, domains or addresses.",
+        "description": "Empty state in the rule list."
+    },
+    "splitTunnel.rules.unnamed": {
+        "message": "Unnamed rule",
+        "description": "Fallback name for a rule without a name."
+    },
+    "splitTunnel.rules.enabled": {
+        "message": "Enabled",
+        "description": "Badge for an enabled rule."
+    },
+    "splitTunnel.rules.disabled": {
+        "message": "Disabled",
+        "description": "Badge for a disabled rule."
+    },
+    "splitTunnel.rules.priorityShort": {
+        "message": "Priority {priority}",
+        "description": "Badge showing a rule priority. {priority} is the number."
+    },
+    "splitTunnel.rules.edit": {
+        "message": "Edit",
+        "description": "Button that opens the rule form."
+    },
+    "splitTunnel.rules.close": {
+        "message": "Close",
+        "description": "Button that closes the rule form."
+    },
+    "splitTunnel.rules.deleteFor": {
+        "message": "Delete rule {rule}",
+        "description": "Accessible label for the delete button. {rule} is the rule name or ID."
+    },
+    "splitTunnel.rules.conflictsTitle": {
+        "message": "Rule conflicts",
+        "description": "Heading for structural conflicts reported by the daemon."
+    },
+    "splitTunnel.rules.conflictBadge": {
+        "message": "Conflict",
+        "description": "Badge on a rule named in a structural conflict."
+    },
+    "splitTunnel.rules.invalidBadge": {
+        "message": "Invalid",
+        "description": "Badge on a rule with local validation errors."
+    },
+    "splitTunnel.rules.preservedTitle": {
+        "message": "Preserved rules",
+        "description": "Heading for rules this screen cannot edit."
+    },
+    "splitTunnel.rules.preservedHelp": {
+        "message": "These rules use a construct this version does not understand. They stay in the daemon configuration unchanged when you save.",
+        "description": "Explanation for preserved rules."
+    },
+    "splitTunnel.rules.preservedBadge": {
+        "message": "Preserved",
+        "description": "Badge for a rule the editor preserves."
+    },
+    "splitTunnel.rules.preservedReason": {
+        "message": "This rule uses an unsupported condition or action.",
+        "description": "Fallback reason for a preserved rule."
+    },
+    "splitTunnel.rules.fixBeforeSave": {
+        "message": "Fix {count} field problem(s) before saving.",
+        "description": "Summary shown when the rule editor has validation errors. {count} is the number of problems."
+    },
+    "splitTunnel.rules.conflictsUnavailableTitle": {
+        "message": "Conflicts are unavailable",
+        "description": "Title when the daemon does not implement the rule listing RPC."
+    },
+    "splitTunnel.rules.conflictsUnavailable": {
+        "message": "This daemon does not expose evaluated rules and conflicts. Rule editing still uses the configuration it returned.",
+        "description": "Explanation when ListRules is unavailable."
+    },
+    "splitTunnel.rules.conflictsErrorTitle": {
+        "message": "Could not read conflicts",
+        "description": "Title when reading the evaluated rule list failed."
+    },
+    "splitTunnel.rules.staleConflictsTitle": {
+        "message": "Conflicts are out of date",
+        "description": "Title when the conflict list revision differs from the configuration revision."
+    },
+    "splitTunnel.rules.staleConflicts": {
+        "message": "The conflict list was evaluated for another revision. Save or refresh to evaluate the current rules.",
+        "description": "Explanation for a stale conflict list."
+    },
+    "splitTunnel.rules.appsUnavailableTitle": {
+        "message": "Installed applications are unavailable",
+        "description": "Title when ListApplications failed."
+    },
+    "splitTunnel.rules.appsUnavailable": {
+        "message": "Application discovery is unavailable. Enter desktop IDs or paths by hand.",
+        "description": "Explanation when application discovery failed."
+    },
+    "splitTunnel.rule.name.label": {
+        "message": "Name",
+        "description": "Label for the rule name field."
+    },
+    "splitTunnel.rule.description.label": {
+        "message": "Description",
+        "description": "Label for the optional rule description field."
+    },
+    "splitTunnel.rule.priority.label": {
+        "message": "Priority",
+        "description": "Label for the rule priority field."
+    },
+    "splitTunnel.rule.priority.help": {
+        "message": "Lower numbers are evaluated first.",
+        "description": "Help text for the rule priority field."
+    },
+    "splitTunnel.rule.matchMode.label": {
+        "message": "Match",
+        "description": "Label for the condition match selector."
+    },
+    "splitTunnel.rule.matchMode.all": {
+        "message": "All conditions (AND)",
+        "description": "Match mode that requires every condition."
+    },
+    "splitTunnel.rule.matchMode.any": {
+        "message": "Any condition (OR)",
+        "description": "Match mode that requires at least one condition."
+    },
+    "splitTunnel.rule.action.label": {
+        "message": "Action",
+        "description": "Label for the rule action selector."
+    },
+    "splitTunnel.rule.action.vpn": {
+        "message": "Through NetBird",
+        "description": "Rule action that routes through the overlay."
+    },
+    "splitTunnel.rule.action.direct": {
+        "message": "Direct",
+        "description": "Rule action that routes through the physical path."
+    },
+    "splitTunnel.rule.action.block": {
+        "message": "Block",
+        "description": "Rule action that drops traffic."
+    },
+    "splitTunnel.rule.action.exit_node": {
+        "message": "Exit node",
+        "description": "Rule action that routes through an exit node."
+    },
+    "splitTunnel.rule.action.default": {
+        "message": "Use default action",
+        "description": "Rule action that defers to the global default."
+    },
+    "splitTunnel.rule.exitNode.label": {
+        "message": "Exit node",
+        "description": "Label for the exit node selector of a rule."
+    },
+    "splitTunnel.rule.exitNode.none": {
+        "message": "No exit nodes are available. Refresh after a network change or enter the rule through the CLI.",
+        "description": "Warning when a rule needs an exit node but none is known."
+    },
+    "splitTunnel.rule.enabled.label": {
+        "message": "Rule enabled",
+        "description": "Switch that enables or disables a rule."
+    },
+    "splitTunnel.rule.enabled.help": {
+        "message": "Disabled rules stay in the configuration but are not evaluated.",
+        "description": "Help text for the rule enable switch."
+    },
+    "splitTunnel.rule.enabled.standardHelp": {
+        "message": "Standard mode does not evaluate rules. Choose another mode to enable them.",
+        "description": "Help text when the mode is standard."
+    },
+    "splitTunnel.rule.conditions.label": {
+        "message": "Conditions",
+        "description": "Label for the rule condition editor."
+    },
+    "splitTunnel.rule.conditions.help": {
+        "message": "A rule matches when its conditions satisfy the selected match mode. Groups combine conditions with AND or OR.",
+        "description": "Help text for the condition editor."
+    },
+    "splitTunnel.rule.conditions.pathsRedacted": {
+        "message": "Executable and source paths are hidden for this account. Desktop IDs still work.",
+        "description": "Help text when application paths are redacted."
+    },
+    "splitTunnel.rule.conditions.add": {
+        "message": "Add condition",
+        "description": "Button that adds a simple condition."
+    },
+    "splitTunnel.rule.conditions.addGroup": {
+        "message": "Add group",
+        "description": "Button that adds an ALL or ANY condition group."
+    },
+    "splitTunnel.rule.condition.group": {
+        "message": "Condition group",
+        "description": "Accessible label for one condition editor group."
+    },
+    "splitTunnel.rule.condition.type": {
+        "message": "Condition type",
+        "description": "Label for the condition type selector."
+    },
+    "splitTunnel.rule.condition.value": {
+        "message": "Value",
+        "description": "Label for the condition value field."
+    },
+    "splitTunnel.rule.condition.remove": {
+        "message": "Remove condition",
+        "description": "Accessible label for the remove condition button."
+    },
+    "splitTunnel.rule.condition.protocol": {
+        "message": "Protocol",
+        "description": "Accessible label for the protocol selector."
+    },
+    "splitTunnel.rule.condition.port": {
+        "message": "Port",
+        "description": "Accessible label for the port field."
+    },
+    "splitTunnel.rule.condition.portPlaceholder": {
+        "message": "443",
+        "description": "Placeholder for the port field."
+    },
+    "splitTunnel.rule.condition.uidPlaceholder": {
+        "message": "1000",
+        "description": "Placeholder for the Linux user ID field."
+    },
+    "splitTunnel.rule.conditionType.desktop_id": {
+        "message": "Application (desktop entry)",
+        "description": "Condition type that matches an XDG desktop entry."
+    },
+    "splitTunnel.rule.conditionType.executable": {
+        "message": "Executable path",
+        "description": "Condition type that matches an executable path."
+    },
+    "splitTunnel.rule.conditionType.flatpak_id": {
+        "message": "Flatpak application",
+        "description": "Condition type that matches a Flatpak application ID."
+    },
+    "splitTunnel.rule.conditionType.snap_id": {
+        "message": "Snap package",
+        "description": "Condition type that matches a Snap package name."
+    },
+    "splitTunnel.rule.conditionType.domain": {
+        "message": "Exact domain",
+        "description": "Condition type that matches one DNS name."
+    },
+    "splitTunnel.rule.conditionType.wildcard_domain": {
+        "message": "Wildcard domain",
+        "description": "Condition type that matches subdomains of a base name."
+    },
+    "splitTunnel.rule.conditionType.cidr": {
+        "message": "IP address or CIDR",
+        "description": "Condition type that matches an IP address or network prefix."
+    },
+    "splitTunnel.rule.conditionType.protocol_port": {
+        "message": "Protocol and port",
+        "description": "Condition type that matches a transport protocol and destination port."
+    },
+    "splitTunnel.rule.conditionType.uid": {
+        "message": "Linux user",
+        "description": "Condition type that matches a Linux user ID."
+    },
+    "splitTunnel.rule.conditionType.all": {
+        "message": "All conditions (AND)",
+        "description": "Condition type that requires every child condition."
+    },
+    "splitTunnel.rule.conditionType.any": {
+        "message": "Any condition (OR)",
+        "description": "Condition type that requires at least one child condition."
+    },
+    "splitTunnel.rule.condition.placeholder.desktop_id": {
+        "message": "firefox.desktop",
+        "description": "Placeholder for a desktop ID."
+    },
+    "splitTunnel.rule.condition.placeholder.executable": {
+        "message": "/usr/bin/firefox",
+        "description": "Placeholder for an executable path."
+    },
+    "splitTunnel.rule.condition.placeholder.flatpak_id": {
+        "message": "org.mozilla.firefox",
+        "description": "Placeholder for a Flatpak ID."
+    },
+    "splitTunnel.rule.condition.placeholder.snap_id": {
+        "message": "firefox",
+        "description": "Placeholder for a Snap name."
+    },
+    "splitTunnel.rule.condition.placeholder.domain": {
+        "message": "example.com",
+        "description": "Placeholder for an exact domain."
+    },
+    "splitTunnel.rule.condition.placeholder.wildcard_domain": {
+        "message": "*.example.com",
+        "description": "Placeholder for a wildcard domain."
+    },
+    "splitTunnel.rule.condition.placeholder.cidr": {
+        "message": "10.0.0.0/8",
+        "description": "Placeholder for an IP address or CIDR."
+    },
+    "splitTunnel.rule.condition.placeholder.uid": {
+        "message": "1000",
+        "description": "Placeholder for a Linux user ID."
+    },
+    "splitTunnel.rule.describe.application": {
+        "message": "Application: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.domain": {
+        "message": "Domain: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.wildcard": {
+        "message": "Wildcard: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.cidr": {
+        "message": "IP/CIDR: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.protocolPort": {
+        "message": "Protocol/port: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.uid": {
+        "message": "User: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.executable": {
+        "message": "Executable: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.flatpak": {
+        "message": "Flatpak: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.describe.snap": {
+        "message": "Snap: {value}",
+        "description": "Human readable condition summary. {value} is the condition value."
+    },
+    "splitTunnel.rule.allOf": {
+        "message": "All of: {items}",
+        "description": "Human readable summary of an ALL condition group. {items} are the children."
+    },
+    "splitTunnel.rule.anyOf": {
+        "message": "Any of: {items}",
+        "description": "Human readable summary of an ANY condition group. {items} are the children."
+    },
+    "splitTunnel.rule.error.name": {
+        "message": "Give the rule a name.",
+        "description": "Validation error for a missing rule name."
+    },
+    "splitTunnel.rule.error.nameLength": {
+        "message": "The rule name is too long.",
+        "description": "Validation error for an overlong rule name."
+    },
+    "splitTunnel.rule.error.descriptionLength": {
+        "message": "The description is too long.",
+        "description": "Validation error for an overlong description."
+    },
+    "splitTunnel.rule.error.priority": {
+        "message": "Priority must be a whole number between 0 and 1000000.",
+        "description": "Validation error for a rule priority."
+    },
+    "splitTunnel.rule.error.defaultActionMode": {
+        "message": "The default action is only available in custom mode.",
+        "description": "Validation error when a rule uses the default action outside custom mode."
+    },
+    "splitTunnel.rule.error.exitNode": {
+        "message": "Choose an exit node for this rule.",
+        "description": "Validation error for a missing exit node."
+    },
+    "splitTunnel.rule.error.exitNodeUnexpected": {
+        "message": "An exit node is only valid with the exit node action.",
+        "description": "Validation error for an exit node on another action."
+    },
+    "splitTunnel.rule.error.conditions": {
+        "message": "Add at least one condition.",
+        "description": "Validation error for an empty condition list."
+    },
+    "splitTunnel.rule.error.groupEmpty": {
+        "message": "Add at least one condition to the group.",
+        "description": "Validation error for an empty ALL or ANY group."
+    },
+    "splitTunnel.rule.error.value": {
+        "message": "Give the condition a value.",
+        "description": "Validation error for an empty condition value."
+    },
+    "splitTunnel.rule.error.wildcard": {
+        "message": "A wildcard domain must start with *. and contain exactly one wildcard.",
+        "description": "Validation error for a malformed wildcard domain."
+    },
+    "splitTunnel.rule.error.desktopId": {
+        "message": "A desktop ID must end with .desktop.",
+        "description": "Validation error for a malformed desktop ID."
+    },
+    "splitTunnel.rule.error.protocolPort": {
+        "message": "Use tcp or udp and a port between 1 and 65535.",
+        "description": "Validation error for a protocol and port condition."
+    },
+    "splitTunnel.rule.error.uid": {
+        "message": "Use a whole number user ID.",
+        "description": "Validation error for a malformed Linux user ID."
+    },
+    "splitTunnel.activity.title": {
+        "message": "Activity",
+        "description": "Section title for the split tunnel event log."
+    },
+    "splitTunnel.activity.description": {
+        "message": "Retained control events reported by the daemon. Events are read on demand and are not streamed to this screen.",
+        "description": "Introductory text for the event log."
+    },
+    "splitTunnel.activity.loadMore": {
+        "message": "Load newer",
+        "description": "Button that loads events after the last displayed sequence."
+    },
+    "splitTunnel.activity.empty": {
+        "message": "No events have been retained.",
+        "description": "Empty state for the event log."
+    },
+    "splitTunnel.activity.event": {
+        "message": "Event",
+        "description": "Fallback event type label."
+    },
+    "splitTunnel.activity.info": {
+        "message": "Info",
+        "description": "Fallback event severity label."
+    },
+    "splitTunnel.activity.unknownTime": {
+        "message": "Time unavailable",
+        "description": "Shown when an event has no timestamp."
+    },
+    "splitTunnel.activity.redacted": {
+        "message": "Event details are hidden for this account.",
+        "description": "Shown on an event whose details the daemon redacted."
+    },
+    "splitTunnel.activity.dropped": {
+        "message": "{count} earlier event(s) were dropped because the reader was too slow.",
+        "description": "Shown when a subscriber lost events. {count} is the number."
+    },
+    "splitTunnel.diagnostics.unavailable.title": {
+        "message": "Unavailable through this API",
+        "description": "Title when a diagnostics feature has no RPC."
+    },
+    "splitTunnel.diagnostics.unavailable.description": {
+        "message": "The daemon did not provide this data to this account: {message}",
+        "description": "Explanation for a failed diagnostics read. {message} is the daemon detail."
+    },
+    "splitTunnel.diagnostics.unavailable.api": {
+        "message": "Missing API: the current split tunnel RPC surface does not expose this view.",
+        "description": "Names the missing API instead of inventing data."
+    },
+    "splitTunnel.statistics.title": {
+        "message": "Statistics",
+        "description": "Section title for split tunnel counters."
+    },
+    "splitTunnel.statistics.caption": {
+        "message": "Split tunnel statistics reported by the daemon",
+        "description": "Accessible table caption for statistics."
+    },
+    "splitTunnel.statistics.metric": {
+        "message": "Metric",
+        "description": "Statistics table column for the metric name."
+    },
+    "splitTunnel.statistics.value": {
+        "message": "Value",
+        "description": "Statistics table column for the metric value."
+    },
+    "splitTunnel.statistics.unavailable": {
+        "message": "Unavailable",
+        "description": "Badge for a metric the daemon could not measure."
+    },
+    "splitTunnel.statistics.footnote": {
+        "message": "Counters come from the daemon status diagnostics. No dedicated metrics RPC is exposed.",
+        "description": "Footnote under the statistics table."
+    },
+    "splitTunnel.statistics.restrictedTitle": {
+        "message": "Statistics are restricted",
+        "description": "Title when diagnostics are redacted for this account."
+    },
+    "splitTunnel.statistics.restricted": {
+        "message": "This account can change split tunnel settings but cannot read diagnostic counters. An administrator account can.",
+        "description": "Explanation when statistics are redacted."
+    },
+    "splitTunnel.statistics.emptyTitle": {
+        "message": "No statistics reported",
+        "description": "Title when the daemon returned no diagnostics."
+    },
+    "splitTunnel.statistics.empty": {
+        "message": "The daemon did not report any split tunnel counters.",
+        "description": "Explanation for an empty statistics map."
+    },
+    "splitTunnel.statistics.missingApi": {
+        "message": "Missing API: no dedicated split tunnel metrics or diagnostics snapshot RPC exists.",
+        "description": "Names the missing API for statistics."
+    },
+    "splitTunnel.dns.title": {
+        "message": "DNS cache",
+        "description": "Section title for tracked domains and cached addresses."
+    },
+    "splitTunnel.dns.cacheSize": {
+        "message": "Tracked addresses",
+        "description": "Label for the number of addresses in the DNS cache."
+    },
+    "splitTunnel.dns.unavailableTitle": {
+        "message": "DNS cache is unavailable",
+        "description": "Title when DNS cache data cannot be read."
+    },
+    "splitTunnel.dns.unavailable": {
+        "message": "The daemon does not expose the DNS cache to this account.",
+        "description": "Explanation for restricted DNS cache data."
+    },
+    "splitTunnel.dns.entriesTitle": {
+        "message": "Domain entries are unavailable",
+        "description": "Title when only a cache size is known."
+    },
+    "splitTunnel.dns.entriesUnavailable": {
+        "message": "The daemon exposes a cache size but no RPC lists tracked domains or resolved addresses.",
+        "description": "Explanation for the missing DNS listing."
+    },
+    "splitTunnel.dns.missingApi": {
+        "message": "Missing API: no RPC lists DNS cache entries or DNS history.",
+        "description": "Names the missing DNS API."
+    },
+    "splitTunnel.troubleshooting.title": {
+        "message": "Packet trace",
+        "description": "Section title for the packet troubleshooting tool."
+    },
+    "splitTunnel.troubleshooting.description": {
+        "message": "Evaluate one packet against the applied policy. Forwarding details are hidden for accounts that are not privileged.",
+        "description": "Introductory text for the packet trace."
+    },
+    "splitTunnel.troubleshooting.sourceIp": {
+        "message": "Source IP",
+        "description": "Label for the trace source address."
+    },
+    "splitTunnel.troubleshooting.destinationIp": {
+        "message": "Destination IP",
+        "description": "Label for the trace destination address."
+    },
+    "splitTunnel.troubleshooting.protocol": {
+        "message": "Protocol",
+        "description": "Label for the trace protocol."
+    },
+    "splitTunnel.troubleshooting.direction": {
+        "message": "Direction",
+        "description": "Label for the trace direction."
+    },
+    "splitTunnel.troubleshooting.outbound": {
+        "message": "Outbound",
+        "description": "Trace direction outbound."
+    },
+    "splitTunnel.troubleshooting.inbound": {
+        "message": "Inbound",
+        "description": "Trace direction inbound."
+    },
+    "splitTunnel.troubleshooting.sourcePort": {
+        "message": "Source port",
+        "description": "Label for the trace source port."
+    },
+    "splitTunnel.troubleshooting.destinationPort": {
+        "message": "Destination port",
+        "description": "Label for the trace destination port."
+    },
+    "splitTunnel.troubleshooting.uid": {
+        "message": "Linux user ID",
+        "description": "Label for the optional user restriction."
+    },
+    "splitTunnel.troubleshooting.restrictUid": {
+        "message": "Restrict the trace to this user",
+        "description": "Checkbox that enables the user restriction."
+    },
+    "splitTunnel.troubleshooting.run": {
+        "message": "Trace packet",
+        "description": "Button that runs the packet trace."
+    },
+    "splitTunnel.troubleshooting.result": {
+        "message": "Result",
+        "description": "Heading for the trace result."
+    },
+    "splitTunnel.troubleshooting.noAction": {
+        "message": "No action",
+        "description": "Shown when the trace returned no final action."
+    },
+    "splitTunnel.troubleshooting.noStages": {
+        "message": "The daemon returned no decision stages.",
+        "description": "Shown when a trace has no stages."
+    },
+    "splitTunnel.troubleshooting.redacted": {
+        "message": "Forwarding details redacted",
+        "description": "Badge when forwarding details are hidden."
+    },
+    "splitTunnel.troubleshooting.apiNote": {
+        "message": "Missing API: the trace RPC reports policy decisions only. It does not expose live connection or kernel state.",
+        "description": "Footnote naming the limits of the trace API."
+    },
+    "splitTunnel.troubleshooting.error.addresses": {
+        "message": "Enter a source and destination IP address.",
+        "description": "Validation error for the trace form."
+    },
+    "splitTunnel.troubleshooting.error.ports": {
+        "message": "Ports must be whole numbers between 0 and 65535.",
+        "description": "Validation error for trace ports."
+    },
+    "splitTunnel.support.title": {
+        "message": "Support bundle",
+        "description": "Section title for support bundle export."
+    },
+    "splitTunnel.support.unavailableTitle": {
+        "message": "Support bundle export is unavailable",
+        "description": "Title when no support bundle RPC exists."
+    },
+    "splitTunnel.support.unavailable": {
+        "message": "This screen cannot export a split tunnel support bundle. The local bundle writer is not exposed to an unprivileged profile owner through the daemon API.",
+        "description": "Explanation for the missing support bundle export."
+    },
+    "splitTunnel.support.missingApi": {
+        "message": "Missing API: no RPC exports or writes a support bundle.",
+        "description": "Names the missing support bundle API."
+    },
+    "splitTunnel.recovery.title": {
+        "message": "Recovery",
+        "description": "Section title for restoring an earlier configuration revision."
+    },
+    "splitTunnel.recovery.description": {
+        "message": "Restore a revision this session has already read. The daemon accepts it as a new revision and keeps the current one in its history.",
+        "description": "Introductory text for configuration recovery."
+    },
+    "splitTunnel.recovery.missingApi": {
+        "message": "Missing API: no RPC lists retained configuration revisions, so only revisions seen in this session are offered.",
+        "description": "Names the missing revision history API."
+    },
+    "splitTunnel.recovery.empty": {
+        "message": "No earlier revision has been seen in this session.",
+        "description": "Empty state when no rollback target is known."
+    },
+    "splitTunnel.recovery.revision": {
+        "message": "Revision {revision}, {mode} mode",
+        "description": "One rollback target. {revision} is the number and {mode} the mode."
+    },
+    "splitTunnel.recovery.seenAt": {
+        "message": "Seen {time}",
+        "description": "When this session first read the revision. {time} is a local timestamp."
+    },
+    "splitTunnel.recovery.restore": {
+        "message": "Restore",
+        "description": "Button that restores a revision."
+    },
+    "splitTunnel.recovery.confirmTitle": {
+        "message": "Restore this revision?",
+        "description": "Title of the rollback confirmation."
+    },
+    "splitTunnel.recovery.confirm": {
+        "message": "Revision {revision} ({mode}) will replace the current split tunnel configuration as a new revision. Continue?",
+        "description": "Rollback confirmation. {revision} and {mode} describe the target."
+    },
+    "error.split_tunnel_revision_not_found": {
+        "message": "The selected split tunnel revision is no longer available.",
+        "description": "Short error headline when the daemon no longer retains a rollback target."
+    },
+    "splitTunnel.rules.standardTitle": {
+        "message": "Rules are not evaluated in standard mode",
+        "description": "Title when the rule editor is disabled because the mode is standard."
+    },
+    "splitTunnel.rules.standardHelp": {
+        "message": "Choose include, exclude or custom mode in the overview to edit and evaluate rules. Existing rules are kept.",
+        "description": "Explanation when standard mode disables the rule editor."
     }
 }

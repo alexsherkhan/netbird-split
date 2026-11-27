@@ -1,6 +1,12 @@
 import { WindowManager } from "@bindings/services";
 
-type ClassifiedError = { code: string; short: string; long: string; command: string };
+type ClassifiedError = {
+    code: string;
+    short: string;
+    long: string;
+    field: string;
+    command: string;
+};
 
 const asObject = (v: unknown): Record<string, unknown> | null =>
     v && typeof v === "object" ? (v as Record<string, unknown>) : null;
@@ -30,7 +36,8 @@ const toClassifiedError = (v: unknown): ClassifiedError | null => {
     const short = typeof o.short === "string" ? o.short : "";
     const long = typeof o.long === "string" ? o.long : "";
     const command = typeof o.command === "string" ? o.command : "";
-    return short || long ? { code, short, long, command } : null;
+    const field = typeof o.field === "string" ? o.field : "";
+    return short || long ? { code, short, long, field, command } : null;
 };
 
 const classify = (e: unknown): ClassifiedError | null => {
@@ -60,6 +67,10 @@ export const formatErrorMessage = (e: unknown): string => {
 // daemon refused, when the error carries one (a change that needs elevated
 // privileges). Empty for every other error.
 export const errorCommand = (e: unknown): string => classify(e)?.command ?? "";
+
+// errorField returns the configuration path the daemon blamed for a rejected
+// write, or an empty string when the error is not field-specific.
+export const errorField = (e: unknown): string => classify(e)?.field ?? "";
 
 // errorCode returns the stable code the daemon classifier attached to an error,
 // or an empty string when the error carries none.
