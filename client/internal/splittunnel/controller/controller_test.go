@@ -32,6 +32,15 @@ type fakeBackend struct {
 	lastCompiled *policy.CompiledPolicy
 	lastOptions  backend.PolicyOptions
 
+	protectCalls  int
+	protectErr    error
+	lastProtected *policy.CompiledPolicy
+
+	domainUpdates []backend.DomainSetUpdate
+	domainErr     error
+
+	callOrder []string
+
 	rollbackCalls  int
 	emergencyCalls int
 	closeCalls     int
@@ -64,7 +73,29 @@ func (b *fakeBackend) ApplyPolicy(
 	b.applyCalls++
 	b.lastCompiled = compiled
 	b.lastOptions = options
+	b.callOrder = append(b.callOrder, "apply")
 	return b.applyErr
+}
+
+func (b *fakeBackend) InstallProtection(
+	_ context.Context,
+	compiled *policy.CompiledPolicy,
+	_ backend.PolicyOptions,
+) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.protectCalls++
+	b.lastProtected = compiled
+	b.callOrder = append(b.callOrder, "protect")
+	return b.protectErr
+}
+
+func (b *fakeBackend) UpdateDomainSets(_ context.Context, updates []backend.DomainSetUpdate) error {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.domainUpdates = append([]backend.DomainSetUpdate(nil), updates...)
+	b.callOrder = append(b.callOrder, "domains")
+	return b.domainErr
 }
 
 func (b *fakeBackend) Rollback(context.Context) error {
@@ -106,6 +137,30 @@ func (b *fakeBackend) setApplyErr(err error) {
 	b.applyErr = err
 }
 
+func (b *fakeBackend) applied() (*policy.CompiledPolicy, backend.PolicyOptions) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.lastCompiled, b.lastOptions
+}
+
+func (b *fakeBackend) protection() (int, *policy.CompiledPolicy) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return b.protectCalls, b.lastProtected
+}
+
+func (b *fakeBackend) order() []string {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]string(nil), b.callOrder...)
+}
+
+func (b *fakeBackend) domains() []backend.DomainSetUpdate {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	return append([]backend.DomainSetUpdate(nil), b.domainUpdates...)
+}
+
 func testConfig() *config.Config {
 	return &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
@@ -145,6 +200,7 @@ func testWiring(context.Context) (Wiring, error) {
 			VPN:    backend.RouteTarget{Interface: "wt0"},
 			Direct: backend.RouteTarget{Interface: "eth0"},
 		},
+		TransportConfigured: true,
 	}, nil
 }
 
@@ -160,7 +216,7 @@ func testContext(t *testing.T) context.Context {
 	return ctx
 }
 
-func TestStartWithMissingConfigLeavesBackendIdle(t *testing.T) {
+func TestStartWithMissingConfigStillRecoversBackend(t *testing.T) {
 	path := filepath.Join(t.TempDir(), DefaultConfigFileName)
 	backend := &fakeBackend{}
 	ctrl := newTestController(t, path, backend)
@@ -168,9 +224,9 @@ func TestStartWithMissingConfigLeavesBackendIdle(t *testing.T) {
 	require.NoError(t, ctrl.Start(testContext(t)))
 
 	init, recoverCalls, apply := backend.calls()
-	assert.Zero(t, init, "a missing configuration must not initialize the backend")
-	assert.Zero(t, recoverCalls)
-	assert.Zero(t, apply)
+	assert.Equal(t, 1, init, "startup recovery needs an initialized backend even without a config")
+	assert.Equal(t, 1, recoverCalls)
+	assert.Zero(t, apply, "a missing configuration must not apply a policy")
 
 	status, err := ctrl.Status(testContext(t))
 	require.NoError(t, err)
@@ -179,6 +235,7 @@ func TestStartWithMissingConfigLeavesBackendIdle(t *testing.T) {
 	assert.Equal(t, config.ModeStandard, status.Mode)
 	assert.Equal(t, backendName(), status.Backend)
 	assert.Equal(t, "missing", status.Diagnostics["config"])
+	assert.Equal(t, "none", status.Diagnostics["recovery"])
 }
 
 func TestApplyPersistsAndReloads(t *testing.T) {
@@ -254,14 +311,15 @@ func TestCorruptConfigFailsClosed(t *testing.T) {
 	require.Error(t, err)
 
 	init, recoverCalls, apply := backend.calls()
-	assert.Zero(t, init)
-	assert.Zero(t, recoverCalls)
+	assert.Equal(t, 1, init, "a corrupt config must still initialize the backend for recovery")
+	assert.Equal(t, 1, recoverCalls)
 	assert.Zero(t, apply, "a corrupt configuration must not reach the backend")
 
 	status, statusErr := ctrl.Status(testContext(t))
 	require.NoError(t, statusErr)
 	assert.Equal(t, "invalid", status.Diagnostics["config"])
 	assert.NotEmpty(t, status.Diagnostics["config.error"])
+	assert.Equal(t, "none", status.Diagnostics["recovery"])
 
 	_, _, configErr := ctrl.Config(testContext(t))
 	require.Error(t, configErr)
@@ -445,7 +503,9 @@ func TestDisablingDoesNotRequireNetworkRuntime(t *testing.T) {
 			return Wiring{}, errors.New("network engine is not running")
 		},
 	})
-	require.NoError(t, ctrl.Start(testContext(t)))
+	// Startup cannot apply an enabled policy without the live runtime, but the
+	// persisted configuration stays readable and disabling it still works.
+	require.Error(t, ctrl.Start(testContext(t)))
 
 	disabled := testConfig()
 	disabled.SplitTunnel.Enabled = false

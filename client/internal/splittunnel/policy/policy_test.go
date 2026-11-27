@@ -144,15 +144,6 @@ func TestCompileRejects(t *testing.T) {
 			constraints: Constraints{PrivatePrefixes: []netip.Prefix{netip.MustParsePrefix("::ffff:10.0.0.0/104")}},
 			wantErr:     "plain IPv4",
 		},
-		{
-			name: "overlapping constraints",
-			cfg:  testConfig(),
-			constraints: Constraints{
-				ControlPrefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
-				PrivatePrefixes: []netip.Prefix{netip.MustParsePrefix("10.1.0.0/16")},
-			},
-			wantErr: "overlaps private prefix",
-		},
 	}
 
 	for _, tt := range tests {
@@ -184,6 +175,23 @@ func TestCompileConstraints(t *testing.T) {
 	assert.Equal(t, config.ActionDirect, compiled.Control[0].Action)
 	require.Len(t, compiled.Mandatory, 1)
 	assert.Equal(t, config.ActionVPN, compiled.Mandatory[0].Action)
+}
+
+func TestCompileAllowsControlAndPrivateOverlap(t *testing.T) {
+	cfg := testConfig()
+	compiled, err := CompileWith(cfg, Constraints{
+		ControlPrefixes: []netip.Prefix{netip.MustParsePrefix("10.1.2.3/32")},
+		PrivatePrefixes: []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
+	})
+	require.NoError(t, err)
+
+	decision := compiled.Evaluate(Flow{Destination: netip.MustParseAddr("10.1.2.3")})
+	assert.Equal(t, config.ActionDirect, decision.Action)
+	assert.Equal(t, LayerControl, decision.Layer)
+
+	decision = compiled.Evaluate(Flow{Destination: netip.MustParseAddr("10.9.9.9")})
+	assert.Equal(t, config.ActionVPN, decision.Action)
+	assert.Equal(t, LayerMandatory, decision.Layer)
 }
 
 func TestCompileConflicts(t *testing.T) {

@@ -24,6 +24,7 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/netbirdio/netbird/client/internal/auth"
+	"github.com/netbirdio/netbird/client/internal/dns"
 	"github.com/netbirdio/netbird/client/internal/expose"
 	"github.com/netbirdio/netbird/client/internal/ipcauth"
 	"github.com/prometheus/client_golang/prometheus"
@@ -255,6 +256,93 @@ func (s *Server) SplitTunnelRuntime() (iface string, overlay4, overlay6 netip.Ad
 		return iface, netip.Addr{}, netip.Addr{}
 	}
 	return iface, engine.GetWgAddr(), engine.GetWgV6Addr()
+}
+
+// SplitTunnelTransportInfo is the live control and transport wiring the split
+// tunnel controller resolves into direct prefixes.
+type SplitTunnelTransportInfo struct {
+	ManagementURL string
+	SignalURL     string
+	RelayURLs     []string
+	STUNHosts     []string
+	TURNHosts     []string
+	PeerEndpoints []string
+}
+
+// SplitTunnelTransport returns the management, signal, relay, STUN/TURN and
+// peer transport endpoints. A peer endpoint is an underlay address: routing it
+// through the split tunnel would break the tunnel's own transport.
+func (s *Server) SplitTunnelTransport() SplitTunnelTransportInfo {
+	s.mutex.Lock()
+	config := s.config
+	connectClient := s.connectClient
+	s.mutex.Unlock()
+
+	var info SplitTunnelTransportInfo
+	if config != nil && config.ManagementURL != nil {
+		info.ManagementURL = config.ManagementURL.String()
+	}
+	signal := s.statusRecorder.GetSignalState()
+	info.SignalURL = signal.URL
+
+	if connectClient != nil {
+		if engine := connectClient.Engine(); engine != nil {
+			info.RelayURLs, info.STUNHosts, info.TURNHosts = engine.TransportHosts()
+		}
+	}
+	for _, state := range s.statusRecorder.GetPeerStates() {
+		if state.RemoteIceCandidateEndpoint != "" {
+			info.PeerEndpoints = append(info.PeerEndpoints, state.RemoteIceCandidateEndpoint)
+		}
+		if state.Relayed && state.RelayServerAddress != "" {
+			info.RelayURLs = append(info.RelayURLs, state.RelayServerAddress)
+		}
+	}
+	return info
+}
+
+// SplitTunnelPrivateRoutes returns the overlay prefixes and management routes
+// that always use the tunnel. The bool reports whether the route manager is
+// available, so the controller can tell an empty set from a not-yet-synced one.
+func (s *Server) SplitTunnelPrivateRoutes() ([]netip.Prefix, bool) {
+	s.mutex.Lock()
+	connectClient := s.connectClient
+	s.mutex.Unlock()
+	if connectClient == nil {
+		return nil, false
+	}
+	engine := connectClient.Engine()
+	if engine == nil {
+		return nil, false
+	}
+
+	prefixes := engine.OverlayPrefixes()
+	if !engine.NetworkMapReady() {
+		return prefixes, false
+	}
+	routes, ready := engine.ClientRoutePrefixes()
+	if !ready {
+		return prefixes, false
+	}
+	return append(prefixes, routes...), true
+}
+
+// SplitTunnelDNS returns the live default DNS server so the controller can
+// observe upstream answers and read the configured resolver prefixes. Nil
+// means the engine is not running a DNS server right now.
+func (s *Server) SplitTunnelDNS() *dns.DefaultServer {
+	s.mutex.Lock()
+	connectClient := s.connectClient
+	s.mutex.Unlock()
+	if connectClient == nil {
+		return nil
+	}
+	engine := connectClient.Engine()
+	if engine == nil {
+		return nil
+	}
+	server, _ := engine.DNSServer().(*dns.DefaultServer)
+	return server
 }
 
 // clientMetricsGatherer returns the Prometheus gatherer of the running

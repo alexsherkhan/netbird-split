@@ -77,30 +77,40 @@ func splitTunnelConfigPath(configFile string) string {
 }
 
 // newSplitTunnelController wires the platform backend and the daemon's runtime
-// data into the controller. Control/transport prefixes and DNS resolvers are
-// not exposed by the daemon yet, so global and strict kill switches stay
-// unavailable instead of risking the daemon's own connection.
+// data into the controller.
 func newSplitTunnelController(instance *server.Server, configFile string) *controller.Controller {
 	return controller.New(splitTunnelConfigPath(configFile), controller.Options{
-		Backend: controller.NewPlatformBackend(),
-		Runtime: splitTunnelRuntime(instance),
+		Backend:      controller.NewPlatformBackend(),
+		Runtime:      splitTunnelRuntime(instance),
+		Applications: controller.NewPlatformApplications(),
+		DNS:          splitTunnelDNS(instance),
 	})
 }
 
+func splitTunnelDNS(instance *server.Server) controller.DNSProvider {
+	return func(context.Context) (controller.DNSRuntime, error) {
+		server := instance.SplitTunnelDNS()
+		if server == nil {
+			return nil, nil
+		}
+		return server, nil
+	}
+}
+
 func splitTunnelRuntime(instance *server.Server) controller.RuntimeProvider {
-	return func(context.Context) (controller.Wiring, error) {
+	return func(ctx context.Context) (controller.Wiring, error) {
 		iface, overlay4, overlay6 := instance.SplitTunnelRuntime()
 		if iface == "" {
 			return controller.Wiring{}, errors.New("overlay interface is not configured")
 		}
 
-		wiring := controller.Wiring{}
-		wiring.Options.VPN = backend.RouteTarget{Interface: iface}
+		options := backend.PolicyOptions{}
+		options.VPN = backend.RouteTarget{Interface: iface}
 		if overlay4.IsValid() {
-			wiring.Options.VPN.Source = overlay4.Unmap()
+			options.VPN.Source = overlay4.Unmap()
 		}
 		if overlay6.IsValid() {
-			wiring.Options.VPN6 = backend.RouteTarget6{
+			options.VPN6 = backend.RouteTarget6{
 				Interface: iface,
 				Source:    overlay6.Unmap(),
 			}
@@ -110,9 +120,35 @@ func splitTunnelRuntime(instance *server.Server) controller.RuntimeProvider {
 		if err != nil {
 			return controller.Wiring{}, fmt.Errorf("resolve direct route: %w", err)
 		}
-		wiring.Options.Direct = direct
+		options.Direct = direct
 		if direct6, err := directTarget(netip.IPv6Unspecified()); err == nil {
-			wiring.Options.Direct6 = backend.RouteTarget6(direct6)
+			options.Direct6 = backend.RouteTarget6(direct6)
+		}
+
+		transport := instance.SplitTunnelTransport()
+		privatePrefixes, routesReady := instance.SplitTunnelPrivateRoutes()
+		var resolvers []netip.Prefix
+		dnsReady := false
+		if dnsServer := instance.SplitTunnelDNS(); dnsServer != nil {
+			resolvers = dnsServer.ResolverPrefixes()
+			dnsReady = true
+		}
+
+		wiring, problems := controller.BuildWiring(ctx, controller.RuntimeInputs{
+			Options:            options,
+			ManagementURL:      transport.ManagementURL,
+			SignalURL:          transport.SignalURL,
+			RelayURLs:          transport.RelayURLs,
+			STUNHosts:          transport.STUNHosts,
+			TURNHosts:          transport.TURNHosts,
+			PeerEndpoints:      transport.PeerEndpoints,
+			PrivatePrefixes:    privatePrefixes,
+			PrivateRoutesReady: routesReady,
+			DNSResolvers:       resolvers,
+			DNSReady:           dnsReady,
+		}, controller.SystemResolver)
+		if len(problems) > 0 {
+			log.Debugf("split tunnel runtime wiring is incomplete: %v", problems)
 		}
 		return wiring, nil
 	}

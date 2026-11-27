@@ -406,13 +406,26 @@ func (r *netlinkRouter) reconcileRoutes(
 	family routeFamily,
 	desired []*netlink.Route,
 ) error {
+	current, err := r.routeListFiltered(family.netlinkFamily(),
+		&netlink.Route{Table: int(table)}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return fmt.Errorf("list routes in table %d: %w", table, err)
+	}
+
+	// Replacing an unchanged route emits another netlink event, which wakes
+	// the reconciler and reapplies the same policy again. Only install routes
+	// that are missing or actually differ; the second list below then removes
+	// superseded defaults without deleting a route replaced above.
 	for _, route := range desired {
+		if routeInList(&current, route) {
+			continue
+		}
 		if err := r.routeReplace(route); err != nil {
 			return fmt.Errorf("replace default route: %w", err)
 		}
 	}
 
-	current, err := r.routeListFiltered(family.netlinkFamily(),
+	current, err = r.routeListFiltered(family.netlinkFamily(),
 		&netlink.Route{Table: int(table)}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return fmt.Errorf("list routes in table %d: %w", table, err)
@@ -429,6 +442,18 @@ func (r *netlinkRouter) reconcileRoutes(
 	return nil
 }
 
+func routeInList(routes *[]netlink.Route, want *netlink.Route) bool {
+	for i := range *routes {
+		if !isDefaultRoute(&(*routes)[i]) {
+			continue
+		}
+		if routeInDesired(&(*routes)[i], []*netlink.Route{want}) {
+			return true
+		}
+	}
+	return false
+}
+
 func routeInDesired(route *netlink.Route, desired []*netlink.Route) bool {
 	for _, want := range desired {
 		if normalizeRouteType(route.Type) != normalizeRouteType(want.Type) ||
@@ -440,7 +465,8 @@ func routeInDesired(route *netlink.Route, desired []*netlink.Route) bool {
 		if normalizeRouteType(route.Type) == unix.RTN_UNREACHABLE {
 			return true
 		}
-		if route.LinkIndex == want.LinkIndex && gatewayEqual(route.Gw, want.Gw) {
+		if route.LinkIndex == want.LinkIndex && gatewayEqual(route.Gw, want.Gw) &&
+			gatewayEqual(route.Src, want.Src) {
 			return true
 		}
 	}

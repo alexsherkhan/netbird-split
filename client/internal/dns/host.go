@@ -118,6 +118,32 @@ func dnsConfigToHostDNSConfig(dnsConfig nbdns.Config, ip netip.Addr, port int) H
 	return config
 }
 
+func resolverPrefixes(groups []*nbdns.NameServerGroup) []netip.Prefix {
+	seen := make(map[netip.Prefix]struct{})
+	var prefixes []netip.Prefix
+	for _, group := range groups {
+		if group == nil {
+			continue
+		}
+		if !group.Enabled {
+			continue
+		}
+		for _, server := range group.NameServers {
+			addr := server.IP.Unmap()
+			if !addr.IsValid() {
+				continue
+			}
+			prefix := netip.PrefixFrom(addr, addr.BitLen())
+			if _, ok := seen[prefix]; ok {
+				continue
+			}
+			seen[prefix] = struct{}{}
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes
+}
+
 type noopHostConfigurator struct{}
 
 func (n noopHostConfigurator) applyDNSConfig(HostDNSConfig, *statemanager.Manager) error {
