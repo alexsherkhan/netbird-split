@@ -1,0 +1,8 @@
+[Desktop Entry]
+Type=Application
+Name=System Editor
+Name[de]=System-Editor
+Comment=An editor fixture
+Exec=/usr/bin/system-editor --new-window %U
+Icon=org.example.Editor
+Categories=Utility;TextEditor;

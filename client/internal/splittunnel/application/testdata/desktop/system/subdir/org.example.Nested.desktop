@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Nested App
+Exec=/usr/bin/nested

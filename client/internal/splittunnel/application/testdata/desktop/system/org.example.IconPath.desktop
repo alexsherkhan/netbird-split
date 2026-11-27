@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Icon Path App
+Exec=/usr/bin/icon-path
+Icon=/usr/share/icons/hicolor/128x128/apps/org.example.IconPath.png

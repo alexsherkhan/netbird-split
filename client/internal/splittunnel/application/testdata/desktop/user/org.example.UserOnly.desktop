@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=User Only
+Exec=/home/user/bin/user-only
+Icon=org.example.UserOnly

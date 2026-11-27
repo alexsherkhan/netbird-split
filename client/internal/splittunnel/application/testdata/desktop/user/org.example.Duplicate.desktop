@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=User Duplicate
+Exec=/home/user/bin/user-duplicate

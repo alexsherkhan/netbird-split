@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Flatpak Duplicate
+Exec=/usr/bin/flatpak run org.example.Duplicate
