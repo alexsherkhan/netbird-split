@@ -138,7 +138,8 @@ func TestNetlinkRouterProtectedClassKeepsUnreachableFallback(t *testing.T) {
 	assert.Equal(t, unix.RTN_UNICAST, unicast.Type)
 	assert.Equal(t, int(allocations.byClass[classExit].table), unicast.Table)
 	assert.Equal(t, 7, unicast.LinkIndex)
-	assert.Zero(t, unicast.Priority)
+	assert.Equal(t, protectedPrimaryMetric, unicast.Priority,
+		"the primary default states its metric so the kernel cannot reassign one")
 
 	fallback := recorded.routes[1]
 	assert.Equal(t, unix.RTN_UNREACHABLE, fallback.Type)
@@ -228,15 +229,19 @@ func TestNetlinkRouterRemoveOnlyOwnedState(t *testing.T) {
 		linkByName:   func(string) (netlink.Link, error) { return nil, errors.New("unused") },
 		routeReplace: func(*netlink.Route) error { return nil },
 		ruleAdd:      func(*netlink.Rule) error { return nil },
-		ruleList: func(int) ([]netlink.Rule, error) {
-			return []netlink.Rule{*ours, *foreign}, nil
+		ruleList: func(family int) ([]netlink.Rule, error) {
+			if family == netlink.FAMILY_V4 {
+				return []netlink.Rule{*ours, *foreign}, nil
+			}
+			return nil, nil
 		},
 		ruleDel: func(rule *netlink.Rule) error {
 			deletedRules = append(deletedRules, *rule)
 			return nil
 		},
-		routeListFiltered: func(_ int, filter *netlink.Route, _ uint64) ([]netlink.Route, error) {
-			if filter.Table == int(allocations.byClass[classDirect].table) {
+		routeListFiltered: func(family int, filter *netlink.Route, _ uint64) ([]netlink.Route, error) {
+			if family == netlink.FAMILY_V4 &&
+				filter.Table == int(allocations.byClass[classDirect].table) {
 				return []netlink.Route{defaultRoute, specificRoute}, nil
 			}
 			return nil, nil
@@ -297,7 +302,7 @@ func TestNetlinkRouterAcceptsIdempotentRuleCollision(t *testing.T) {
 		routeDel: func(*netlink.Route) error { return nil },
 	}
 
-	require.NoError(t, router.ensureRule(allocation))
+	require.NoError(t, router.ensureRuleFor(allocation, routeFamily4))
 }
 
 func TestNetlinkRouterRejectsForeignRuleCollision(t *testing.T) {
@@ -322,6 +327,6 @@ func TestNetlinkRouterRejectsForeignRuleCollision(t *testing.T) {
 		routeDel: func(*netlink.Route) error { return nil },
 	}
 
-	err := router.ensureRule(allocation)
+	err := router.ensureRuleFor(allocation, routeFamily4)
 	require.ErrorIs(t, err, backend.ErrForeignObject)
 }

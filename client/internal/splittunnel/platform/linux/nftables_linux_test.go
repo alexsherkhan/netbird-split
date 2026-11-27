@@ -40,7 +40,7 @@ func TestNFTablesCatalogIsCompleteAndUnique(t *testing.T) {
 	}
 
 	sets := setSpecs()
-	require.Len(t, sets, 9)
+	require.Len(t, sets, 10)
 	setNames := make(map[setName]struct{}, len(sets))
 	for _, spec := range sets {
 		assert.NotEmpty(t, spec.name)
@@ -52,7 +52,7 @@ func TestNFTablesCatalogIsCompleteAndUnique(t *testing.T) {
 		setVPN4, setVPN6,
 		setDirect4, setDirect6,
 		setBlocked4, setBlocked6,
-		setExit4,
+		setExit4, setExit6,
 		setDomains4, setDomains6,
 	} {
 		_, ok := setNames[name]
@@ -117,7 +117,7 @@ func TestNFTablesOwnedObjects(t *testing.T) {
 	owned := manager.Owned()
 	assert.Equal(t, defaultTableName, owned.Table)
 	assert.Len(t, owned.Chains, 4)
-	assert.Len(t, owned.Sets, 9)
+	assert.Len(t, owned.Sets, 10)
 }
 
 func TestVerifyExistingChains(t *testing.T) {
@@ -163,7 +163,12 @@ func TestVerifyExistingSets(t *testing.T) {
 	}}
 	require.ErrorIs(t, verifyExistingSets(foreign, table), backend.ErrForeignObject)
 
-	domains := setSpecs()[7]
+	var domains setSpec
+	for _, spec := range setSpecs() {
+		if spec.name == setDomains4 {
+			domains = spec
+		}
+	}
 	mismatch := []*nftables.Set{{
 		Name:       string(domains.name),
 		Table:      table,

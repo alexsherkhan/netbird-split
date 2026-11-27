@@ -38,10 +38,10 @@ var (
 	// enforce yet. The backend rejects the whole policy instead of silently
 	// ignoring the condition.
 	ErrUnsupportedCondition = errors.New("unsupported split tunnel condition")
-	// ErrIPv6Unsupported reports an IPv6 policy or target. IPv6 enforcement is
-	// a later milestone, and accepting it would claim coverage that does not
-	// exist.
-	ErrIPv6Unsupported = errors.New("IPv6 split tunnel routing is not supported")
+	// ErrIPv6Unsupported reports an IPv6 address supplied to an IPv4 target.
+	// IPv6 egress paths use RouteTarget6 so the mismatch is caught at the API
+	// boundary instead of producing a route the kernel cannot install.
+	ErrIPv6Unsupported = errors.New("IPv6 address is not valid for an IPv4 target")
 	// ErrExitNodeUnavailable reports an exit node that is not the single
 	// authorized active exit node. Protected traffic must not fall back to
 	// another path.
@@ -102,6 +102,50 @@ type RouteTarget struct {
 	Source    netip.Addr
 }
 
+// RouteTarget6 is the IPv6 counterpart of RouteTarget. It is a separate type so
+// an IPv4 target can never be passed where an IPv6 egress path is required.
+type RouteTarget6 struct {
+	Interface string
+	Gateway   netip.Addr
+	Source    netip.Addr
+}
+
+// Validate checks that the target can be installed as an IPv6 route.
+func (t RouteTarget6) Validate() error {
+	if t.Interface == "" {
+		return errors.New("interface is empty")
+	}
+	if err := validateTarget6Addr(t.Gateway, "gateway"); err != nil {
+		return err
+	}
+	if err := validateTarget6Addr(t.Source, "source"); err != nil {
+		return err
+	}
+	return nil
+}
+
+// IsZero reports whether the target carries no egress information at all. A
+// zero target means the caller has no IPv6 path for the class.
+func (t RouteTarget6) IsZero() bool {
+	return t.Interface == "" && !t.Gateway.IsValid() && !t.Source.IsValid()
+}
+
+func validateTarget6Addr(addr netip.Addr, field string) error {
+	if !addr.IsValid() {
+		return nil
+	}
+	if addr.Is4In6() {
+		return fmt.Errorf("%s must use a plain IPv6 address", field)
+	}
+	if !addr.Is6() {
+		return fmt.Errorf("%s must be an IPv6 address", field)
+	}
+	if addr.Zone() != "" {
+		return fmt.Errorf("%s must not contain a zone", field)
+	}
+	return nil
+}
+
 // Validate checks that the target can be installed as an IPv4 route.
 func (t RouteTarget) Validate() error {
 	if t.Interface == "" {
@@ -135,9 +179,12 @@ func validateTargetAddr(addr netip.Addr, field string) error {
 // ExitNode is the single authorized exit node a policy may use. Rules that
 // target this ID route through Target; rules that target another ID are
 // rejected so protected traffic never falls back to an unauthorized path.
+// Target6 is nil when the exit node has no IPv6 egress; protected IPv6 is then
+// installed fail-closed instead of using the physical default.
 type ExitNode struct {
-	ID     config.ExitNodeID
-	Target RouteTarget
+	ID      config.ExitNodeID
+	Target  RouteTarget
+	Target6 *RouteTarget6
 }
 
 // Validate checks the exit node identity and target.
@@ -151,13 +198,17 @@ func (e ExitNode) Validate() error {
 	return nil
 }
 
-// PolicyOptions are the runtime egress targets a backend needs to enforce an
-// IPv4 compiled policy. VPN and Direct are only required when the policy uses
-// those actions. ExitNode may be nil when no exit node is authorized; exit
-// rules are then installed fail-closed.
+// PolicyOptions are the runtime egress targets a backend needs to enforce a
+// compiled policy. VPN and Direct are only required when the policy uses those
+// actions. VPN6 and Direct6 are their IPv6 counterparts and are only required
+// when the policy enables IPv6 and the corresponding class is used. ExitNode
+// may be nil when no exit node is authorized; exit rules are then installed
+// fail-closed.
 type PolicyOptions struct {
 	VPN      RouteTarget
 	Direct   RouteTarget
+	VPN6     RouteTarget6
+	Direct6  RouteTarget6
 	ExitNode *ExitNode
 }
 

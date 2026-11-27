@@ -3,11 +3,13 @@
 // Package linux implements the Linux split tunnel network backend.
 //
 // The backend owns one dedicated nftables table, allocates policy routing
-// primitives that do not collide with upstream NetBird, and applies IPv4
-// include, exclude and custom policies. It installs only owned nftables rules
-// tagged with the backend marker and only routes and policy rules allocated
-// from the split ranges. IPv6, DNS tracking, application classification, kill
-// switch modes and crash recovery are later milestones.
+// primitives that do not collide with upstream NetBird, and applies IPv4 and
+// IPv6 include, exclude and custom policies. It installs only owned nftables
+// rules tagged with the backend marker and only routes and policy rules
+// allocated from the split ranges. The IPv6 path runs only when the policy
+// enables it and the host has a usable IPv6 stack; otherwise IPv4 is applied
+// unchanged. DNS tracking, application classification, kill switch modes and
+// crash recovery are later milestones.
 package linux
 
 import (
@@ -166,11 +168,12 @@ func (b *Backend) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// ApplyPolicy replaces the applied IPv4 policy. A disabled policy, or a
-// policy with no rules, only clears previously applied state. Conditions and
-// targets the milestone cannot enforce are rejected before any kernel state is
-// touched. A protected class whose target is absent is installed with an
-// unreachable default instead of falling back to the physical path.
+// ApplyPolicy replaces the applied policy. A disabled policy, or a policy with
+// no rules, only clears previously applied state. Conditions and targets the
+// milestone cannot enforce are rejected before any kernel state is touched. A
+// protected class whose target is absent is installed with an unreachable
+// default instead of falling back to the physical path. IPv6 is applied only
+// when the compiled policy enables it and the host has a usable IPv6 stack.
 func (b *Backend) ApplyPolicy(
 	ctx context.Context,
 	compiled *policy.CompiledPolicy,
@@ -194,10 +197,11 @@ func (b *Backend) ApplyPolicy(
 		return fmt.Errorf("allocate split policy routing primitives: %w", err)
 	}
 
-	plan, err := compilePolicy(compiled, options, b.allocations)
+	enableIPv6 := compiled != nil && compiled.IPv6 && b.ipv6AvailableLocked()
+	plan, err := compilePolicyFor(compiled, options, b.allocations, enableIPv6)
 	if err != nil {
 		b.recordErrorLocked(err)
-		return fmt.Errorf("compile IPv4 policy: %w", err)
+		return fmt.Errorf("compile policy: %w", err)
 	}
 
 	if err := b.rollbackPolicyLocked(ctx); err != nil {
@@ -341,6 +345,12 @@ func (b *Backend) rollbackPolicyLocked(ctx context.Context) error {
 
 	b.policyApplied = false
 	return nberrors.FormatErrorOrNil(merr)
+}
+
+// ipv6AvailableLocked reports whether the probed host stack can carry IPv6.
+// Missing IPv6 skips only the v6 path; it never fails an IPv4 policy.
+func (b *Backend) ipv6AvailableLocked() bool {
+	return b.capabilities.StateOf(backend.CapabilityIPv6) == backend.CapabilityAvailable
 }
 
 func (b *Backend) ensureAllocationsLocked() error {

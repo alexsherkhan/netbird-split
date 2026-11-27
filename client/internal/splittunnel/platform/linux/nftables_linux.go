@@ -31,6 +31,7 @@ const (
 	setBlocked4 setName = "blocked4"
 	setBlocked6 setName = "blocked6"
 	setExit4    setName = "exit4"
+	setExit6    setName = "exit6"
 	setDomains4 setName = "domains4"
 	setDomains6 setName = "domains6"
 )
@@ -92,6 +93,7 @@ func setSpecs() []setSpec {
 		{name: setBlocked4, keyType: nftables.TypeIPAddr, interval: true, comment: "split tunnel blocked prefixes, IPv4"},
 		{name: setBlocked6, keyType: nftables.TypeIP6Addr, interval: true, comment: "split tunnel blocked prefixes, IPv6"},
 		{name: setExit4, keyType: nftables.TypeIPAddr, interval: true, comment: "split tunnel exit-node prefixes, IPv4"},
+		{name: setExit6, keyType: nftables.TypeIP6Addr, interval: true, comment: "split tunnel exit-node prefixes, IPv6"},
 		{name: setDomains4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel resolved domains, IPv4"},
 		{name: setDomains6, keyType: nftables.TypeIP6Addr, timeout: domainSetTimeout, comment: "split tunnel resolved domains, IPv6"},
 	}

@@ -31,6 +31,41 @@ const (
 
 var splitClasses = []routeClass{classVPN, classDirect, classBlock, classExit}
 
+// routeFamily is the address family of a policy route and rule. IPv4 and IPv6
+// policy rules are independent, so the same table ID and mark can be reused for
+// both families without one family's rule selecting the other's traffic.
+type routeFamily uint8
+
+const (
+	routeFamily4 routeFamily = iota
+	routeFamily6
+)
+
+func routeFamilyOf(family nftFamily) routeFamily {
+	if family == family6 {
+		return routeFamily6
+	}
+	return routeFamily4
+}
+
+func (f routeFamily) netlinkFamily() int {
+	if f == routeFamily6 {
+		return netlink.FAMILY_V6
+	}
+	return netlink.FAMILY_V4
+}
+
+func (f routeFamily) isIPv6() bool {
+	return f == routeFamily6
+}
+
+func (f routeFamily) String() string {
+	if f == routeFamily6 {
+		return "IPv6"
+	}
+	return "IPv4"
+}
+
 func classForAction(action config.Action) (routeClass, bool) {
 	switch action {
 	case config.ActionVPN:
@@ -46,15 +81,27 @@ func classForAction(action config.Action) (routeClass, bool) {
 	}
 }
 
-func setForClass(class routeClass) setName {
+func setForClassFamily(class routeClass, family nftFamily) setName {
 	switch class {
 	case classVPN:
+		if family == family6 {
+			return setVPN6
+		}
 		return setVPN4
 	case classDirect:
+		if family == family6 {
+			return setDirect6
+		}
 		return setDirect4
 	case classBlock:
+		if family == family6 {
+			return setBlocked6
+		}
 		return setBlocked4
 	case classExit:
+		if family == family6 {
+			return setExit6
+		}
 		return setExit4
 	default:
 		return ""
@@ -117,12 +164,14 @@ func (a allocations) get(class routeClass) (classAllocation, bool) {
 }
 
 type routePlan struct {
-	classes []classRoute
+	classes  []classRoute
+	classes6 []classRoute
 }
 
 type classRoute struct {
 	class      routeClass
 	allocation classAllocation
+	family     routeFamily
 	target     backend.RouteTarget
 	protected  bool
 	blackhole  bool
@@ -165,33 +214,48 @@ func (r *netlinkRouter) Apply(ctx context.Context, plan routePlan) error {
 			return fmt.Errorf("apply %s route: %w", class.class, err)
 		}
 	}
+	for _, class := range plan.classes6 {
+		if err := r.applyRoute(class); err != nil {
+			return fmt.Errorf("apply %s IPv6 route: %w", class.class, err)
+		}
+	}
 	for _, class := range plan.classes {
-		if err := r.ensureRule(class.allocation); err != nil {
+		if err := r.ensureRuleFor(class.allocation, class.family); err != nil {
 			return fmt.Errorf("apply %s policy rule: %w", class.class, err)
+		}
+	}
+	for _, class := range plan.classes6 {
+		if err := r.ensureRuleFor(class.allocation, class.family); err != nil {
+			return fmt.Errorf("apply %s IPv6 policy rule: %w", class.class, err)
 		}
 	}
 	return nil
 }
 
-// protectedFallbackMetric keeps an unreachable default in every protected
-// table behind the real default. If the target link disappears, the kernel
-// removes the real route and marked traffic hits the unreachable route instead
-// of falling through to a physical table.
-const protectedFallbackMetric = 1000
+// The kernel assigns a default metric (1024) to an IPv6 default route when the
+// request carries none, so every installed default states its metric
+// explicitly. The fallback metric keeps an unreachable default behind the real
+// route: if the target link disappears, the kernel removes the real route and
+// marked traffic hits the unreachable route instead of a physical table.
+const (
+	protectedPrimaryMetric  = 1
+	protectedFallbackMetric = 1000
+)
 
 func (r *netlinkRouter) applyRoute(class classRoute) error {
 	table := class.allocation.table
+	family := class.family
 	if class.blackhole {
-		return r.reconcileRoutes(table, []*netlink.Route{
-			unreachableDefaultRoute(table, protectedFallbackMetric),
+		return r.reconcileRoutes(table, family, []*netlink.Route{
+			unreachableDefaultRoute(table, family, protectedFallbackMetric),
 		})
 	}
 
 	target := class.target
 	if target.Interface == "" {
 		if class.protected {
-			return r.reconcileRoutes(table, []*netlink.Route{
-				unreachableDefaultRoute(table, protectedFallbackMetric),
+			return r.reconcileRoutes(table, family, []*netlink.Route{
+				unreachableDefaultRoute(table, family, protectedFallbackMetric),
 			})
 		}
 		return fmt.Errorf("%w: %s interface is empty", backend.ErrInvalidPolicyOption, class.class)
@@ -200,27 +264,33 @@ func (r *netlinkRouter) applyRoute(class classRoute) error {
 	link, err := r.linkByName(target.Interface)
 	if err != nil {
 		if class.protected {
-			return r.reconcileRoutes(table, []*netlink.Route{
-				unreachableDefaultRoute(table, protectedFallbackMetric),
+			return r.reconcileRoutes(table, family, []*netlink.Route{
+				unreachableDefaultRoute(table, family, protectedFallbackMetric),
 			})
 		}
 		return fmt.Errorf("resolve interface %q: %w", target.Interface, err)
 	}
 
-	desired := []*netlink.Route{unicastDefaultRoute(table, link, target)}
+	desired := []*netlink.Route{unicastDefaultRoute(table, family, link, target)}
 	if class.protected {
-		desired = append(desired, unreachableDefaultRoute(table, protectedFallbackMetric))
+		desired = append(desired, unreachableDefaultRoute(table, family, protectedFallbackMetric))
 	}
-	return r.reconcileRoutes(table, desired)
+	return r.reconcileRoutes(table, family, desired)
 }
 
-func unicastDefaultRoute(table TableID, link netlink.Link, target backend.RouteTarget) *netlink.Route {
+func unicastDefaultRoute(
+	table TableID,
+	family routeFamily,
+	link netlink.Link,
+	target backend.RouteTarget,
+) *netlink.Route {
 	route := &netlink.Route{
 		Type:      unix.RTN_UNICAST,
-		Family:    netlink.FAMILY_V4,
+		Family:    family.netlinkFamily(),
 		Table:     int(table),
-		Dst:       defaultRouteDestination(),
+		Dst:       defaultRouteDestinationFor(family),
 		LinkIndex: link.Attrs().Index,
+		Priority:  protectedPrimaryMetric,
 		Scope:     netlink.SCOPE_LINK,
 	}
 	if target.Gateway.IsValid() {
@@ -233,24 +303,28 @@ func unicastDefaultRoute(table TableID, link netlink.Link, target backend.RouteT
 	return route
 }
 
-func unreachableDefaultRoute(table TableID, metric int) *netlink.Route {
+func unreachableDefaultRoute(table TableID, family routeFamily, metric int) *netlink.Route {
 	return &netlink.Route{
 		Type:     unix.RTN_UNREACHABLE,
-		Family:   netlink.FAMILY_V4,
+		Family:   family.netlinkFamily(),
 		Table:    int(table),
-		Dst:      defaultRouteDestination(),
+		Dst:      defaultRouteDestinationFor(family),
 		Priority: metric,
 	}
 }
 
-func (r *netlinkRouter) reconcileRoutes(table TableID, desired []*netlink.Route) error {
+func (r *netlinkRouter) reconcileRoutes(
+	table TableID,
+	family routeFamily,
+	desired []*netlink.Route,
+) error {
 	for _, route := range desired {
 		if err := r.routeReplace(route); err != nil {
 			return fmt.Errorf("replace default route: %w", err)
 		}
 	}
 
-	current, err := r.routeListFiltered(netlink.FAMILY_V4,
+	current, err := r.routeListFiltered(family.netlinkFamily(),
 		&netlink.Route{Table: int(table)}, netlink.RT_FILTER_TABLE)
 	if err != nil {
 		return fmt.Errorf("list routes in table %d: %w", table, err)
@@ -269,10 +343,16 @@ func (r *netlinkRouter) reconcileRoutes(table TableID, desired []*netlink.Route)
 
 func routeInDesired(route *netlink.Route, desired []*netlink.Route) bool {
 	for _, want := range desired {
-		if normalizeRouteType(route.Type) == normalizeRouteType(want.Type) &&
-			route.Priority == want.Priority &&
-			route.LinkIndex == want.LinkIndex &&
-			gatewayEqual(route.Gw, want.Gw) {
+		if normalizeRouteType(route.Type) != normalizeRouteType(want.Type) ||
+			route.Priority != want.Priority {
+			continue
+		}
+		// An unreachable route is not bound to a link; the kernel reports it
+		// with lo even though it was installed without one.
+		if normalizeRouteType(route.Type) == unix.RTN_UNREACHABLE {
+			return true
+		}
+		if route.LinkIndex == want.LinkIndex && gatewayEqual(route.Gw, want.Gw) {
 			return true
 		}
 	}
@@ -286,13 +366,16 @@ func gatewayEqual(left, right net.IP) bool {
 	return left.Equal(right)
 }
 
-func defaultRouteDestination() *net.IPNet {
+func defaultRouteDestinationFor(family routeFamily) *net.IPNet {
+	if family.isIPv6() {
+		return &net.IPNet{IP: net.IPv6zero, Mask: net.CIDRMask(0, 128)}
+	}
 	return &net.IPNet{IP: net.IPv4zero.To4(), Mask: net.CIDRMask(0, 32)}
 }
 
-func (r *netlinkRouter) ensureRule(allocation classAllocation) error {
+func (r *netlinkRouter) ensureRuleFor(allocation classAllocation, family routeFamily) error {
 	rule := netlink.NewRule()
-	rule.Family = netlink.FAMILY_V4
+	rule.Family = family.netlinkFamily()
 	rule.Table = int(allocation.table)
 	rule.Priority = int(allocation.priority)
 	rule.Mark = allocation.mark.Value
@@ -307,7 +390,7 @@ func (r *netlinkRouter) ensureRule(allocation classAllocation) error {
 
 	// A repeated apply hits EEXIST. Confirm the priority is occupied by this
 	// exact split rule and not by an upstream or third-party rule.
-	existing, err := r.ruleList(netlink.FAMILY_V4)
+	existing, err := r.ruleList(rule.Family)
 	if err != nil {
 		return fmt.Errorf("list rules after collision at priority %d: %w", rule.Priority, err)
 	}
@@ -315,7 +398,7 @@ func (r *netlinkRouter) ensureRule(allocation classAllocation) error {
 		if existing[i].Priority != rule.Priority {
 			continue
 		}
-		if existing[i].Family == netlink.FAMILY_V4 &&
+		if existing[i].Family == rule.Family &&
 			existing[i].Table == rule.Table &&
 			existing[i].Mark == rule.Mark &&
 			existing[i].Mask != nil && *existing[i].Mask == mask {
@@ -335,10 +418,13 @@ func (r *netlinkRouter) Remove(ctx context.Context, allocations allocations) err
 
 	var merr *multierror.Error
 
-	rules, err := r.ruleList(netlink.FAMILY_V4)
-	if err != nil {
-		merr = multierror.Append(merr, fmt.Errorf("list IPv4 policy rules: %w", err))
-	} else {
+	for _, family := range []routeFamily{routeFamily4, routeFamily6} {
+		rules, err := r.ruleList(family.netlinkFamily())
+		if err != nil {
+			merr = multierror.Append(merr,
+				fmt.Errorf("list %v policy rules: %w", family, err))
+			continue
+		}
 		for i := range rules {
 			if !allocations.matchesRule(&rules[i]) {
 				continue
@@ -356,21 +442,23 @@ func (r *netlinkRouter) Remove(ctx context.Context, allocations allocations) err
 		if !ok {
 			continue
 		}
-		routes, err := r.routeListFiltered(netlink.FAMILY_V4,
-			&netlink.Route{Table: int(allocation.table)}, netlink.RT_FILTER_TABLE)
-		if err != nil {
-			merr = multierror.Append(merr,
-				fmt.Errorf("list routes in table %d: %w", allocation.table, err))
-			continue
-		}
-		for i := range routes {
-			if !isDefaultRoute(&routes[i]) {
+		for _, family := range []routeFamily{routeFamily4, routeFamily6} {
+			routes, err := r.routeListFiltered(family.netlinkFamily(),
+				&netlink.Route{Table: int(allocation.table)}, netlink.RT_FILTER_TABLE)
+			if err != nil {
+				merr = multierror.Append(merr,
+					fmt.Errorf("list routes in table %d: %w", allocation.table, err))
 				continue
 			}
-			if err := r.routeDel(&routes[i]); err != nil &&
-				!errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.ESRCH) {
-				merr = multierror.Append(merr,
-					fmt.Errorf("delete route in table %d: %w", allocation.table, err))
+			for i := range routes {
+				if !isDefaultRoute(&routes[i]) {
+					continue
+				}
+				if err := r.routeDel(&routes[i]); err != nil &&
+					!errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.ESRCH) {
+					merr = multierror.Append(merr,
+						fmt.Errorf("delete route in table %d: %w", allocation.table, err))
+				}
 			}
 		}
 	}
@@ -379,9 +467,11 @@ func (r *netlinkRouter) Remove(ctx context.Context, allocations allocations) err
 }
 
 func (a allocations) matchesRule(rule *netlink.Rule) bool {
+	if rule.Family != netlink.FAMILY_V4 && rule.Family != netlink.FAMILY_V6 {
+		return false
+	}
 	for _, allocation := range a.byClass {
-		if rule.Family != netlink.FAMILY_V4 ||
-			rule.Priority != int(allocation.priority) ||
+		if rule.Priority != int(allocation.priority) ||
 			rule.Table != int(allocation.table) ||
 			rule.Mark != allocation.mark.Value {
 			continue
@@ -405,6 +495,6 @@ func isDefaultRoute(route *netlink.Route) bool {
 	if route.Dst == nil {
 		return true
 	}
-	ones, bits := route.Dst.Mask.Size()
-	return ones == 0 && bits == 32
+	ones, _ := route.Dst.Mask.Size()
+	return ones == 0
 }

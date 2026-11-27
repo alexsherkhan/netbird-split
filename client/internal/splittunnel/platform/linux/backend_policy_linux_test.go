@@ -50,6 +50,46 @@ func TestBackendApplyPolicyInstallsAndRollsBack(t *testing.T) {
 	assert.Equal(t, 2, router.removeCalls)
 }
 
+func TestBackendApplyPolicySkipsIPv6WithoutHostSupport(t *testing.T) {
+	manager := &fakeManager{createdTable: true}
+	router := &fakeRouter{}
+
+	capabilities := availableCapabilities()
+	for i := range capabilities.Items {
+		if capabilities.Items[i].ID == backend.CapabilityIPv6 {
+			capabilities.Items[i] = backend.Capability{
+				ID:     backend.CapabilityIPv6,
+				State:  backend.CapabilityUnavailable,
+				Detail: "IPv6 is disabled",
+			}
+		}
+	}
+	probe := &fakeProber{capabilities: capabilities}
+	b, _, _ := newTestBackendWithRouter(probe, manager, router)
+	require.NoError(t, b.Initialize(context.Background()))
+
+	cfg := includeConfig(
+		testRule("vpn4", config.ActionVPN, cidrCondition("10.9.3.0/24")),
+		testRule("vpn6", config.ActionVPN, cidrCondition("2001:db8::/32")),
+	)
+	cfg.SplitTunnel.IPv6 = true
+	compiled := mustCompile(t, cfg)
+
+	require.NoError(t, b.ApplyPolicy(context.Background(), compiled, testOptions()))
+
+	require.Len(t, router.plans, 1)
+	assert.NotEmpty(t, router.plans[0].classes, "IPv4 must still be applied")
+	assert.Empty(t, router.plans[0].classes6,
+		"a host without IPv6 must skip only the v6 route path")
+
+	require.Len(t, manager.appliedPolicies, 1)
+	for _, rule := range manager.appliedPolicies[0].rules {
+		assert.Equal(t, family4, rule.family,
+			"a host without IPv6 must not install v6 classification rules")
+	}
+	assert.Empty(t, manager.appliedPolicies[0].sets[setVPN6])
+}
+
 func TestBackendApplyPolicyReconcilesWithStableAllocations(t *testing.T) {
 	manager := &fakeManager{createdTable: true}
 	router := &fakeRouter{}

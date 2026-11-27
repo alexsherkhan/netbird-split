@@ -11,6 +11,46 @@ import (
 	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
 )
 
+func TestRouteTarget6Validate(t *testing.T) {
+	valid := RouteTarget6{
+		Interface: "eth0",
+		Gateway:   netip.MustParseAddr("fe80::1"),
+		Source:    netip.MustParseAddr("2001:db8::2"),
+	}
+	assert.NoError(t, valid.Validate())
+	assert.False(t, valid.IsZero())
+
+	assert.NoError(t, RouteTarget6{Interface: "eth0"}.Validate(),
+		"a link-scope overlay interface needs no gateway or source")
+
+	tests := []struct {
+		name   string
+		target RouteTarget6
+	}{
+		{name: "empty interface", target: RouteTarget6{Source: netip.MustParseAddr("2001:db8::2")}},
+		{name: "IPv4 gateway", target: RouteTarget6{Interface: "eth0", Gateway: netip.MustParseAddr("10.0.0.1")}},
+		{name: "IPv4 source", target: RouteTarget6{Interface: "eth0", Source: netip.MustParseAddr("10.0.0.2")}},
+		{name: "v4-mapped address", target: RouteTarget6{Interface: "eth0", Gateway: netip.MustParseAddr("::ffff:10.0.0.1")}},
+		{name: "zone", target: RouteTarget6{Interface: "eth0", Gateway: netip.MustParseAddr("fe80::1%eth0")}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			assert.Error(t, tt.target.Validate())
+		})
+	}
+
+	assert.True(t, RouteTarget6{}.IsZero())
+	assert.False(t, RouteTarget6{Interface: "eth0"}.IsZero())
+}
+
+func TestRouteTargetRejectsIPv6Address(t *testing.T) {
+	target := RouteTarget{
+		Interface: "eth0",
+		Gateway:   netip.MustParseAddr("2001:db8::1"),
+	}
+	require.ErrorIs(t, target.Validate(), ErrIPv6Unsupported)
+}
+
 func TestCapabilitiesLookup(t *testing.T) {
 	capabilities := Capabilities{Items: []Capability{
 		{ID: CapabilityNFTables, State: CapabilityAvailable},
