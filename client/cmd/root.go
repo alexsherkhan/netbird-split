@@ -28,6 +28,7 @@ import (
 	daddr "github.com/netbirdio/netbird/client/internal/daemonaddr"
 	"github.com/netbirdio/netbird/client/internal/localmetrics"
 	"github.com/netbirdio/netbird/client/internal/profilemanager"
+	spcli "github.com/netbirdio/netbird/client/internal/splittunnel/cli"
 )
 
 const (
@@ -122,8 +123,11 @@ func Execute() error {
 	if isUpdateBinary() {
 		return updateCmd.Execute()
 	}
-	err := rootCmd.Execute()
+	cmd, err := rootCmd.ExecuteC()
 	if err != nil {
+		if isSplitCommand(cmd) {
+			err = spcli.ClassifyCommand(err)
+		}
 		printCommandError(rootCmd, err)
 	}
 	return err
@@ -183,6 +187,7 @@ func init() {
 	rootCmd.AddCommand(profileCmd)
 	rootCmd.AddCommand(exposeCmd)
 	rootCmd.AddCommand(postureCmd)
+	rootCmd.AddCommand(splitCmd)
 
 	postureCmd.AddCommand(postureCertProofCmd)
 
