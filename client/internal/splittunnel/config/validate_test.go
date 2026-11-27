@@ -2,6 +2,7 @@ package config
 
 import (
 	"net/netip"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -481,6 +482,27 @@ func TestValidateLimits(t *testing.T) {
 			assert.Contains(t, err.Error(), tt.wantErr)
 		})
 	}
+}
+
+func TestDefaultLimitsSupportSpecRuleScale(t *testing.T) {
+	cfg := validConfig()
+	cfg.SplitTunnel.Rules = make([]Rule, 10_000)
+	for i := range cfg.SplitTunnel.Rules {
+		cfg.SplitTunnel.Rules[i] = Rule{
+			ID:        RuleID("rule-" + strconv.Itoa(i)),
+			Name:      "rule",
+			Enabled:   true,
+			Priority:  i,
+			MatchMode: MatchAll,
+			Conditions: []Condition{{
+				Type:   ConditionCIDR,
+				Prefix: netip.MustParsePrefix("10.0.0.0/8"),
+			}},
+			Action: ActionVPN,
+		}
+	}
+
+	require.NoError(t, cfg.Validate())
 }
 
 func TestValidateNilConfig(t *testing.T) {

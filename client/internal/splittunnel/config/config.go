@@ -222,15 +222,16 @@ type Limits struct {
 // DefaultLimits returns the production limits for imported configurations.
 func DefaultLimits() Limits {
 	return Limits{
-		MaxRules:             1024,
+		// Spec section 19 requires at least 10,000 supported rules.
+		MaxRules:             10_000,
 		MaxConditionsPerRule: 64,
-		MaxTotalConditions:   4096,
+		MaxTotalConditions:   100_000,
 		MaxCompositeDepth:    4,
 		MaxIDLength:          128,
 		MaxNameLength:        256,
 		MaxDescriptionLength: 1024,
 		MaxValueLength:       512,
-		MaxConfigBytes:       4 << 20,
+		MaxConfigBytes:       16 << 20,
 	}
 }
 
