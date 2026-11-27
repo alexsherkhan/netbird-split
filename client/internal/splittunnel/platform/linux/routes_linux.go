@@ -181,6 +181,16 @@ type classRoute struct {
 type routeManager interface {
 	Apply(ctx context.Context, plan routePlan) error
 	Remove(ctx context.Context, allocations allocations) error
+	RemoveUnused(ctx context.Context, allocations allocations, used map[routeClass]bool) error
+	Verify(ctx context.Context, plan routePlan) error
+	Inspect(ctx context.Context, allocations allocations) (routeObservation, error)
+}
+
+// routeObservation is the owned route and policy-rule state recovery may
+// inspect. It never includes foreign tables or rules.
+type routeObservation struct {
+	Routes      int
+	PolicyRules int
 }
 
 type netlinkRouter struct {
@@ -246,59 +256,58 @@ const (
 )
 
 func (r *netlinkRouter) applyRoute(class classRoute) error {
+	desired, err := r.desiredRoutes(class)
+	if err != nil {
+		return err
+	}
+	return r.reconcileRoutes(class.allocation.table, class.family, desired)
+}
+
+func (r *netlinkRouter) desiredRoutes(class classRoute) ([]*netlink.Route, error) {
 	table := class.allocation.table
 	family := class.family
+	unreachable := func() []*netlink.Route {
+		return []*netlink.Route{unreachableDefaultRoute(table, family, protectedFallbackMetric)}
+	}
 	if class.blackhole {
-		return r.reconcileRoutes(table, family, []*netlink.Route{
-			unreachableDefaultRoute(table, family, protectedFallbackMetric),
-		})
+		return unreachable(), nil
 	}
 
 	target := class.target
 	if target.Interface == "" {
 		if class.protected {
-			return r.reconcileRoutes(table, family, []*netlink.Route{
-				unreachableDefaultRoute(table, family, protectedFallbackMetric),
-			})
+			return unreachable(), nil
 		}
-		return fmt.Errorf("%w: %s interface is empty", backend.ErrInvalidPolicyOption, class.class)
+		return nil, fmt.Errorf("%w: %s interface is empty", backend.ErrInvalidPolicyOption, class.class)
 	}
 
 	link, err := r.linkByName(target.Interface)
 	if err != nil {
 		if class.protected {
-			return r.reconcileRoutes(table, family, []*netlink.Route{
-				unreachableDefaultRoute(table, family, protectedFallbackMetric),
-			})
+			return unreachable(), nil
 		}
-		return fmt.Errorf("resolve interface %q: %w", target.Interface, err)
+		return nil, fmt.Errorf("resolve interface %q: %w", target.Interface, err)
 	}
 	if class.protected && !linkIsUp(link) {
-		return r.reconcileRoutes(table, family, []*netlink.Route{
-			unreachableDefaultRoute(table, family, protectedFallbackMetric),
-		})
+		return unreachable(), nil
 	}
 
 	source, sourceAvailable, err := r.resolveSource(link, family, target.Source)
 	if err != nil {
 		if class.protected {
-			return r.reconcileRoutes(table, family, []*netlink.Route{
-				unreachableDefaultRoute(table, family, protectedFallbackMetric),
-			})
+			return unreachable(), nil
 		}
-		return err
+		return nil, err
 	}
 	if class.protected && !sourceAvailable {
-		return r.reconcileRoutes(table, family, []*netlink.Route{
-			unreachableDefaultRoute(table, family, protectedFallbackMetric),
-		})
+		return unreachable(), nil
 	}
 
 	desired := []*netlink.Route{unicastDefaultRoute(table, family, link, target, source)}
 	if class.protected {
 		desired = append(desired, unreachableDefaultRoute(table, family, protectedFallbackMetric))
 	}
-	return r.reconcileRoutes(table, family, desired)
+	return desired, nil
 }
 
 func linkIsUp(link netlink.Link) bool {
@@ -543,6 +552,191 @@ func (r *netlinkRouter) Remove(ctx context.Context, allocations allocations) err
 	}
 
 	return nberrors.FormatErrorOrNil(merr)
+}
+
+// RemoveUnused removes the owned routes and policy rules for classes the new
+// plan no longer uses. It runs only after classification has been replaced, so
+// a stale table cannot keep marked traffic alive.
+func (r *netlinkRouter) RemoveUnused(
+	ctx context.Context,
+	allocations allocations,
+	used map[routeClass]bool,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	var merr *multierror.Error
+	for _, class := range splitClasses {
+		if used[class] {
+			continue
+		}
+		allocation, ok := allocations.get(class)
+		if !ok {
+			continue
+		}
+		if err := r.removeAllocation(ctx, allocation); err != nil {
+			merr = multierror.Append(merr, fmt.Errorf("remove unused %s: %w", class, err))
+		}
+	}
+	return nberrors.FormatErrorOrNil(merr)
+}
+
+func (r *netlinkRouter) removeAllocation(ctx context.Context, allocation classAllocation) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	var merr *multierror.Error
+	for _, family := range []routeFamily{routeFamily4, routeFamily6} {
+		rules, err := r.ruleList(family.netlinkFamily())
+		if err != nil {
+			merr = multierror.Append(merr, fmt.Errorf("list %v policy rules: %w", family, err))
+			continue
+		}
+		for i := range rules {
+			if !ruleMatchesAllocation(&rules[i], allocation) {
+				continue
+			}
+			if err := r.ruleDel(&rules[i]); err != nil &&
+				!errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.ESRCH) {
+				merr = multierror.Append(merr,
+					fmt.Errorf("delete policy rule %d: %w", rules[i].Priority, err))
+			}
+		}
+		routes, err := r.routeListFiltered(family.netlinkFamily(),
+			&netlink.Route{Table: int(allocation.table)}, netlink.RT_FILTER_TABLE)
+		if err != nil {
+			merr = multierror.Append(merr,
+				fmt.Errorf("list routes in table %d: %w", allocation.table, err))
+			continue
+		}
+		for i := range routes {
+			if !isDefaultRoute(&routes[i]) {
+				continue
+			}
+			if err := r.routeDel(&routes[i]); err != nil &&
+				!errors.Is(err, syscall.ENOENT) && !errors.Is(err, syscall.ESRCH) {
+				merr = multierror.Append(merr,
+					fmt.Errorf("delete route in table %d: %w", allocation.table, err))
+			}
+		}
+	}
+	return nberrors.FormatErrorOrNil(merr)
+}
+
+// Verify confirms every route and policy rule the plan requires is observable
+// in the kernel. It never treats a missing protected route as success.
+func (r *netlinkRouter) Verify(ctx context.Context, plan routePlan) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	for _, class := range append(append([]classRoute(nil), plan.classes...), plan.classes6...) {
+		if err := r.verifyClassRoute(class); err != nil {
+			return err
+		}
+		if err := r.verifyClassRule(class); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (r *netlinkRouter) verifyClassRoute(class classRoute) error {
+	desired, err := r.desiredRoutes(class)
+	if err != nil {
+		return err
+	}
+	routes, err := r.routeListFiltered(class.family.netlinkFamily(),
+		&netlink.Route{Table: int(class.allocation.table)}, netlink.RT_FILTER_TABLE)
+	if err != nil {
+		return fmt.Errorf("list routes in table %d: %w", class.allocation.table, err)
+	}
+	for _, want := range desired {
+		found := false
+		for i := range routes {
+			if routeMatchesDesired(&routes[i], want) {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return fmt.Errorf("%s %v route in table %d is missing", class.class, class.family, class.allocation.table)
+		}
+	}
+	return nil
+}
+
+func (r *netlinkRouter) verifyClassRule(class classRoute) error {
+	rules, err := r.ruleList(class.family.netlinkFamily())
+	if err != nil {
+		return fmt.Errorf("list %v policy rules: %w", class.family, err)
+	}
+	for i := range rules {
+		if ruleMatchesAllocation(&rules[i], class.allocation) {
+			return nil
+		}
+	}
+	return fmt.Errorf("%s %v policy rule at priority %d is missing",
+		class.class, class.family, class.allocation.priority)
+}
+
+func routeMatchesDesired(route, want *netlink.Route) bool {
+	if normalizeRouteType(route.Type) != normalizeRouteType(want.Type) ||
+		route.Priority != want.Priority {
+		return false
+	}
+	if normalizeRouteType(route.Type) == unix.RTN_UNREACHABLE {
+		return true
+	}
+	return route.LinkIndex == want.LinkIndex && gatewayEqual(route.Gw, want.Gw)
+}
+
+func ruleMatchesAllocation(rule *netlink.Rule, allocation classAllocation) bool {
+	if rule.Family != netlink.FAMILY_V4 && rule.Family != netlink.FAMILY_V6 {
+		return false
+	}
+	if rule.Priority != int(allocation.priority) ||
+		rule.Table != int(allocation.table) ||
+		rule.Mark != allocation.mark.Value {
+		return false
+	}
+	return rule.Mask != nil && *rule.Mask == allocation.mark.Mask
+}
+
+// Inspect reports only owned policy rules and default routes.
+func (r *netlinkRouter) Inspect(ctx context.Context, allocations allocations) (routeObservation, error) {
+	if err := ctx.Err(); err != nil {
+		return routeObservation{}, err
+	}
+	var observation routeObservation
+	for _, family := range []routeFamily{routeFamily4, routeFamily6} {
+		rules, err := r.ruleList(family.netlinkFamily())
+		if err != nil {
+			return routeObservation{}, fmt.Errorf("list %v policy rules: %w", family, err)
+		}
+		for i := range rules {
+			if allocations.matchesRule(&rules[i]) {
+				observation.PolicyRules++
+			}
+		}
+		for _, class := range splitClasses {
+			allocation, ok := allocations.get(class)
+			if !ok {
+				continue
+			}
+			routes, err := r.routeListFiltered(family.netlinkFamily(),
+				&netlink.Route{Table: int(allocation.table)}, netlink.RT_FILTER_TABLE)
+			if err != nil {
+				return routeObservation{}, fmt.Errorf("list routes in table %d: %w", allocation.table, err)
+			}
+			for i := range routes {
+				if isDefaultRoute(&routes[i]) {
+					observation.Routes++
+				}
+			}
+		}
+	}
+	return observation, nil
 }
 
 func (a allocations) matchesRule(rule *netlink.Rule) bool {

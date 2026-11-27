@@ -47,6 +47,11 @@ type fakeManager struct {
 	killSwitchErr   error
 	domainErr       error
 	owned           backend.OwnedObjects
+	verifyErr       error
+	inspectErr      error
+	inspect         nftObservation
+	verifyCalls     int
+	inspectCalls    int
 }
 
 func (f *fakeManager) Ensure(context.Context) error {
@@ -99,6 +104,16 @@ func (f *fakeManager) ClearPolicy(context.Context) error {
 	return f.clearPolicyErr
 }
 
+func (f *fakeManager) VerifyPolicy(context.Context, nftPolicy) error {
+	f.verifyCalls++
+	return f.verifyErr
+}
+
+func (f *fakeManager) Inspect(context.Context) (nftObservation, error) {
+	f.inspectCalls++
+	return f.inspect, f.inspectErr
+}
+
 func cloneDomainUpdates(updates []backend.DomainSetUpdate) []backend.DomainSetUpdate {
 	out := make([]backend.DomainSetUpdate, len(updates))
 	for i := range updates {
@@ -109,17 +124,31 @@ func cloneDomainUpdates(updates []backend.DomainSetUpdate) []backend.DomainSetUp
 }
 
 type fakeRouter struct {
-	applyErr    error
-	removeErr   error
-	applyCalls  int
-	removeCalls int
-	plans       []routePlan
-	allocations allocations
+	applyErr          error
+	applyFailFrom     int
+	removeErr         error
+	removeUnusedErr   error
+	verifyErr         error
+	inspectErr        error
+	applyCalls        int
+	removeCalls       int
+	removeUnusedCalls int
+	verifyCalls       int
+	inspectCalls      int
+	plans             []routePlan
+	allocations       allocations
+	inspect           routeObservation
 }
 
 func (f *fakeRouter) Apply(_ context.Context, plan routePlan) error {
 	f.applyCalls++
 	f.plans = append(f.plans, plan)
+	if f.applyFailFrom > 0 {
+		if f.applyCalls >= f.applyFailFrom {
+			return f.applyErr
+		}
+		return nil
+	}
 	return f.applyErr
 }
 
@@ -127,6 +156,21 @@ func (f *fakeRouter) Remove(_ context.Context, allocations allocations) error {
 	f.removeCalls++
 	f.allocations = allocations
 	return f.removeErr
+}
+
+func (f *fakeRouter) RemoveUnused(context.Context, allocations, map[routeClass]bool) error {
+	f.removeUnusedCalls++
+	return f.removeUnusedErr
+}
+
+func (f *fakeRouter) Verify(context.Context, routePlan) error {
+	f.verifyCalls++
+	return f.verifyErr
+}
+
+func (f *fakeRouter) Inspect(context.Context, allocations) (routeObservation, error) {
+	f.inspectCalls++
+	return f.inspect, f.inspectErr
 }
 
 func availableCapabilities() backend.Capabilities {

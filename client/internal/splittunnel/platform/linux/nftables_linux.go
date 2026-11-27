@@ -171,6 +171,15 @@ type nftablesManager struct {
 	createdTable bool
 }
 
+// nftObservation is the owned nftables state recovery may inspect.
+type nftObservation struct {
+	TablePresent    bool
+	Chains          []string
+	Sets            []string
+	ClassifyRules   int
+	KillSwitchRules int
+}
+
 func newNFTablesManager(tableName string) (*nftablesManager, error) {
 	if tableName == "" {
 		return nil, fmt.Errorf("nftables table name is empty")
