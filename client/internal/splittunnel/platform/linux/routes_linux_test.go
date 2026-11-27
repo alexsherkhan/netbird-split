@@ -27,7 +27,7 @@ type recordedRouter struct {
 
 func newRecordedRouter() *recordedRouter {
 	link := &netlink.Dummy{
-		LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7},
+		LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7, Flags: net.FlagUp},
 	}
 	router := &recordedRouter{}
 	router.linkByName = func(name string) (netlink.Link, error) {
@@ -329,4 +329,72 @@ func TestNetlinkRouterRejectsForeignRuleCollision(t *testing.T) {
 
 	err := router.ensureRuleFor(allocation, routeFamily4)
 	require.ErrorIs(t, err, backend.ErrForeignObject)
+}
+
+func TestNetlinkRouterSourceSelectionDropsStaleSource(t *testing.T) {
+	allocations := testAllocations(t)
+	recorded := newRecordedRouter()
+	router := recorded.router()
+	router.addrList = func(netlink.Link, int) ([]netlink.Addr, error) {
+		return []netlink.Addr{{IPNet: &net.IPNet{IP: net.ParseIP("10.0.0.9")}}}, nil
+	}
+
+	plan := routePlan{classes: []classRoute{{
+		class:      classDirect,
+		allocation: allocations.byClass[classDirect],
+		target: backend.RouteTarget{
+			Interface: "eth0",
+			Source:    netip.MustParseAddr("10.0.0.2"),
+		},
+	}}}
+
+	require.NoError(t, router.Apply(context.Background(), plan))
+	require.Len(t, recorded.routes, 1)
+	assert.Nil(t, recorded.routes[0].Src,
+		"a source address that is no longer assigned must not be installed")
+}
+
+func TestNetlinkRouterProtectedClassWithoutAddressFailsClosed(t *testing.T) {
+	allocations := testAllocations(t)
+	recorded := newRecordedRouter()
+	router := recorded.router()
+	router.addrList = func(netlink.Link, int) ([]netlink.Addr, error) {
+		return nil, nil
+	}
+
+	plan := routePlan{classes: []classRoute{{
+		class:      classExit,
+		allocation: allocations.byClass[classExit],
+		target: backend.RouteTarget{
+			Interface: "eth0",
+			Source:    netip.MustParseAddr("10.0.0.2"),
+		},
+		protected: true,
+	}}}
+
+	require.NoError(t, router.Apply(context.Background(), plan))
+	require.Len(t, recorded.routes, 1)
+	assert.Equal(t, unix.RTN_UNREACHABLE, recorded.routes[0].Type)
+}
+
+func TestNetlinkRouterProtectedClassWithDownLinkFailsClosed(t *testing.T) {
+	allocations := testAllocations(t)
+	recorded := newRecordedRouter()
+	down := &netlink.Dummy{
+		LinkAttrs: netlink.LinkAttrs{Name: "eth0", Index: 7},
+	}
+	recorded.linkByName = func(string) (netlink.Link, error) { return down, nil }
+	router := recorded.router()
+
+	plan := routePlan{classes: []classRoute{{
+		class:      classExit,
+		allocation: allocations.byClass[classExit],
+		target:     backend.RouteTarget{Interface: "eth0"},
+		protected:  true,
+	}}}
+
+	require.NoError(t, router.Apply(context.Background(), plan))
+	require.Len(t, recorded.routes, 1)
+	assert.Equal(t, unix.RTN_UNREACHABLE, recorded.routes[0].Type,
+		"a down exit interface must leave only the fail-closed default")
 }

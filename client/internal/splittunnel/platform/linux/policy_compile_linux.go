@@ -74,6 +74,9 @@ func compilePolicyForWithResolver(
 		return nil, fmt.Errorf("kill switch mode %q: %w",
 			compiled.KillSwitch, backend.ErrNotImplemented)
 	}
+	if err := validateSingleExitNode(compiled, options); err != nil {
+		return nil, err
+	}
 	applications, err := normalizeApplicationScopes(options.Applications)
 	if err != nil {
 		return nil, err
@@ -177,14 +180,14 @@ func compilePolicyForWithResolver(
 	}
 
 	routeClasses4, err := compileRoutePlan(
-		compiled, options, allocations, used4, family4)
+		options, allocations, used4, family4)
 	if err != nil {
 		return nil, err
 	}
 	var routeClasses6 []classRoute
 	if enableIPv6 {
 		routeClasses6, err = compileRoutePlan(
-			compiled, options, allocations, used6, family6)
+			options, allocations, used6, family6)
 		if err != nil {
 			return nil, err
 		}
@@ -823,7 +826,6 @@ func normalizePrefixes(prefixes []netip.Prefix) []netip.Prefix {
 }
 
 func compileRoutePlan(
-	compiled *policy.CompiledPolicy,
 	options backend.PolicyOptions,
 	allocations allocations,
 	used map[routeClass]bool,
@@ -872,7 +874,7 @@ func compileRoutePlan(
 				target:     target,
 			})
 		case classExit:
-			classRoute, err := exitRoute(compiled, options, allocation, family)
+			classRoute, err := exitRoute(options, allocation, family)
 			if err != nil {
 				return nil, err
 			}
@@ -935,8 +937,47 @@ func resolveTarget6(target backend.RouteTarget6, name string) (backend.RouteTarg
 	return target, true, nil
 }
 
+// validateSingleExitNode enforces the 1.0 single-exit-node invariant before any
+// kernel state is touched. A policy that names several identities is rejected
+// instead of silently choosing one, and a rule that names an identity other
+// than the active exit node is rejected so protected traffic cannot take an
+// unauthorized path. A policy with exit rules and no active exit node is
+// allowed; its exit table is installed fail-closed.
+func validateSingleExitNode(compiled *policy.CompiledPolicy, options backend.PolicyOptions) error {
+	ids := make(map[config.ExitNodeID]struct{})
+	for i := range compiled.Rules {
+		rule := &compiled.Rules[i]
+		if rule.Action != config.ActionExitNode {
+			continue
+		}
+		if rule.ExitNodeID == "" {
+			return fmt.Errorf("exit node rule %q has an empty exit node ID: %w",
+				rule.ID, backend.ErrInvalidPolicyOption)
+		}
+		ids[rule.ExitNodeID] = struct{}{}
+	}
+	if len(ids) == 0 {
+		return nil
+	}
+
+	active := make([]config.ExitNodeID, 0, len(ids))
+	for id := range ids {
+		active = append(active, id)
+	}
+	sort.Slice(active, func(i, j int) bool { return active[i] < active[j] })
+	if len(active) > 1 {
+		return &backend.MultipleExitNodesError{IDs: active}
+	}
+	if options.ExitNode != nil && options.ExitNode.ID != active[0] {
+		return &backend.ExitNodeUnavailableError{
+			Requested: active[0],
+			Active:    options.ExitNode.ID,
+		}
+	}
+	return nil
+}
+
 func exitRoute(
-	compiled *policy.CompiledPolicy,
 	options backend.PolicyOptions,
 	allocation classAllocation,
 	family nftFamily,
@@ -957,17 +998,6 @@ func exitRoute(
 		if err := options.ExitNode.Validate(); err != nil {
 			return classRoute{}, fmt.Errorf("%w: exit node target: %w",
 				backend.ErrInvalidPolicyOption, err)
-		}
-	}
-	for _, rule := range compiled.Rules {
-		if rule.Action != config.ActionExitNode || rule.ExitNodeID == "" {
-			continue
-		}
-		if rule.ExitNodeID != options.ExitNode.ID {
-			return classRoute{}, &backend.ExitNodeUnavailableError{
-				Requested: rule.ExitNodeID,
-				Active:    options.ExitNode.ID,
-			}
 		}
 	}
 

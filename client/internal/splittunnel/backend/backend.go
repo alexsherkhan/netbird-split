@@ -47,6 +47,10 @@ var (
 	// authorized active exit node. Protected traffic must not fall back to
 	// another path.
 	ErrExitNodeUnavailable = errors.New("exit node is unavailable")
+	// ErrMultipleExitNodes reports a policy that names more than one exit node.
+	// The 1.0 client supports one active exit node and rejects the policy
+	// instead of silently selecting one.
+	ErrMultipleExitNodes = errors.New("multiple exit nodes are not supported")
 	// ErrInvalidPolicyOption reports a missing or malformed runtime route
 	// target needed to enforce a compiled policy.
 	ErrInvalidPolicyOption = errors.New("invalid split tunnel policy option")
@@ -91,6 +95,25 @@ func (e *ExitNodeUnavailableError) Error() string {
 // Unwrap reports the sentinel exit-node-unavailable error.
 func (e *ExitNodeUnavailableError) Unwrap() error {
 	return ErrExitNodeUnavailable
+}
+
+// MultipleExitNodesError names the exit node identities found in one policy.
+type MultipleExitNodesError struct {
+	IDs []config.ExitNodeID
+}
+
+// Error implements error.
+func (e *MultipleExitNodesError) Error() string {
+	ids := make([]string, len(e.IDs))
+	for i, id := range e.IDs {
+		ids[i] = string(id)
+	}
+	return fmt.Sprintf("exit nodes %s: %v", strings.Join(ids, ", "), ErrMultipleExitNodes)
+}
+
+// Unwrap reports the sentinel multiple-exit-nodes error.
+func (e *MultipleExitNodesError) Unwrap() error {
+	return ErrMultipleExitNodes
 }
 
 // RouteTarget is a typed IPv4 egress path a backend uses for one traffic
@@ -466,6 +489,9 @@ type Status struct {
 	PolicyApplied bool
 	LastError     string
 	UpdatedAt     time.Time
+	// Generation is incremented after every successful policy apply or
+	// reapply, including a disabled policy that clears kernel state.
+	Generation uint64
 }
 
 // DomainEntry is one address that a DNS name resolved to. ExpiresAt is zero

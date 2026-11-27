@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"syscall"
 
 	"github.com/hashicorp/go-multierror"
@@ -184,6 +185,7 @@ type routeManager interface {
 
 type netlinkRouter struct {
 	linkByName        func(string) (netlink.Link, error)
+	addrList          func(netlink.Link, int) ([]netlink.Addr, error)
 	routeReplace      func(*netlink.Route) error
 	ruleAdd           func(*netlink.Rule) error
 	ruleList          func(int) ([]netlink.Rule, error)
@@ -195,6 +197,7 @@ type netlinkRouter struct {
 func newNetlinkRouter() *netlinkRouter {
 	return &netlinkRouter{
 		linkByName:        netlink.LinkByName,
+		addrList:          netlink.AddrList,
 		routeReplace:      netlink.RouteReplace,
 		ruleAdd:           netlink.RuleAdd,
 		ruleList:          netlink.RuleList,
@@ -270,12 +273,87 @@ func (r *netlinkRouter) applyRoute(class classRoute) error {
 		}
 		return fmt.Errorf("resolve interface %q: %w", target.Interface, err)
 	}
+	if class.protected && !linkIsUp(link) {
+		return r.reconcileRoutes(table, family, []*netlink.Route{
+			unreachableDefaultRoute(table, family, protectedFallbackMetric),
+		})
+	}
 
-	desired := []*netlink.Route{unicastDefaultRoute(table, family, link, target)}
+	source, sourceAvailable, err := r.resolveSource(link, family, target.Source)
+	if err != nil {
+		if class.protected {
+			return r.reconcileRoutes(table, family, []*netlink.Route{
+				unreachableDefaultRoute(table, family, protectedFallbackMetric),
+			})
+		}
+		return err
+	}
+	if class.protected && !sourceAvailable {
+		return r.reconcileRoutes(table, family, []*netlink.Route{
+			unreachableDefaultRoute(table, family, protectedFallbackMetric),
+		})
+	}
+
+	desired := []*netlink.Route{unicastDefaultRoute(table, family, link, target, source)}
 	if class.protected {
 		desired = append(desired, unreachableDefaultRoute(table, family, protectedFallbackMetric))
 	}
 	return r.reconcileRoutes(table, family, desired)
+}
+
+func linkIsUp(link netlink.Link) bool {
+	attrs := link.Attrs()
+	return attrs != nil && attrs.Flags&net.FlagUp != 0
+}
+
+// resolveSource keeps source selection consistent after an address change. A
+// configured source that is no longer assigned to the interface is dropped so
+// the kernel selects the current primary address. A protected class with no
+// address of the required family is not installed, which leaves its
+// unreachable default in place.
+func (r *netlinkRouter) resolveSource(
+	link netlink.Link,
+	family routeFamily,
+	source netip.Addr,
+) (netip.Addr, bool, error) {
+	if r.addrList == nil {
+		return source, true, nil
+	}
+
+	addrs, err := r.addrList(link, family.netlinkFamily())
+	if err != nil {
+		return netip.Addr{}, false, fmt.Errorf("list addresses on interface %q: %w",
+			link.Attrs().Name, err)
+	}
+
+	hasAddress := false
+	for i := range addrs {
+		address, ok := netip.AddrFromSlice(addrs[i].IP)
+		if !ok {
+			continue
+		}
+		address = address.Unmap()
+		if !addressMatchesFamily(address, family) {
+			continue
+		}
+		hasAddress = true
+		if source.IsValid() && address == source {
+			return source, true, nil
+		}
+	}
+	if !hasAddress {
+		return netip.Addr{}, false, nil
+	}
+	// A configured source that disappeared is dropped so the kernel selects
+	// the current primary address instead of a stale source it would reject.
+	return netip.Addr{}, true, nil
+}
+
+func addressMatchesFamily(address netip.Addr, family routeFamily) bool {
+	if family.isIPv6() {
+		return address.Is6() && !address.Is4In6()
+	}
+	return address.Is4()
 }
 
 func unicastDefaultRoute(
@@ -283,6 +361,7 @@ func unicastDefaultRoute(
 	family routeFamily,
 	link netlink.Link,
 	target backend.RouteTarget,
+	source netip.Addr,
 ) *netlink.Route {
 	route := &netlink.Route{
 		Type:      unix.RTN_UNICAST,
@@ -297,8 +376,8 @@ func unicastDefaultRoute(
 		route.Gw = target.Gateway.AsSlice()
 		route.Scope = netlink.SCOPE_UNIVERSE
 	}
-	if target.Source.IsValid() {
-		route.Src = net.IP(target.Source.AsSlice())
+	if source.IsValid() {
+		route.Src = net.IP(source.AsSlice())
 	}
 	return route
 }

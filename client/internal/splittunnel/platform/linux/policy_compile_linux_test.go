@@ -375,6 +375,52 @@ func TestCompilePolicyRejectsExitNodeMismatch(t *testing.T) {
 	assert.Equal(t, config.ExitNodeID("exit-b"), exitErr.Active)
 }
 
+func TestCompilePolicyRejectsMultipleExitNodes(t *testing.T) {
+	cfg := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		SplitTunnel: config.SplitTunnel{
+			Enabled:       true,
+			Mode:          config.ModeCustom,
+			DefaultAction: config.ActionDirect,
+			Rules: []config.Rule{
+				{
+					ID:         "exit-b",
+					Name:       "exit-b",
+					Enabled:    true,
+					Priority:   20,
+					MatchMode:  config.MatchAll,
+					Action:     config.ActionExitNode,
+					ExitNodeID: "exit-b",
+					Conditions: []config.Condition{cidrCondition("203.0.113.0/24")},
+				},
+				{
+					ID:         "exit-a",
+					Name:       "exit-a",
+					Enabled:    true,
+					Priority:   10,
+					MatchMode:  config.MatchAll,
+					Action:     config.ActionExitNode,
+					ExitNodeID: "exit-a",
+					Conditions: []config.Condition{cidrCondition("198.51.100.0/24")},
+				},
+			},
+		},
+	}
+	compiled := mustCompile(t, cfg)
+
+	options := testOptions()
+	options.ExitNode = &backend.ExitNode{
+		ID:     "exit-a",
+		Target: backend.RouteTarget{Interface: "wt-exit"},
+	}
+
+	_, err := compilePolicy(compiled, options, testAllocations(t))
+	require.ErrorIs(t, err, backend.ErrMultipleExitNodes)
+	var multiErr *backend.MultipleExitNodesError
+	require.True(t, errors.As(err, &multiErr))
+	assert.Equal(t, []config.ExitNodeID{"exit-a", "exit-b"}, multiErr.IDs)
+}
+
 func TestCompilePolicyExitNodeUnavailableIsFailClosed(t *testing.T) {
 	cfg := &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,
