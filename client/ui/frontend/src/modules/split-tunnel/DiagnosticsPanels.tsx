@@ -64,9 +64,11 @@ export const StatisticsPanel = ({ status }: { status: SplitTunnelStatus }) => {
             />
         );
     }
-    const diagnostics: Record<string, string> = status.diagnostics ?? {};
-    const entries = Object.entries(diagnostics)
-        .filter(([key]) => key.startsWith("diagnostics."))
+    const entries = Object.entries(status.diagnostics ?? {})
+        .filter(
+            (entry): entry is [string, string] =>
+                entry[0].startsWith("diagnostics.") && typeof entry[1] === "string",
+        )
         .sort(([a], [b]) => a.localeCompare(b));
     if (entries.length === 0) {
         return (
@@ -171,7 +173,6 @@ export const DNSPanel = ({ status }: { status: SplitTunnelStatus }) => {
 };
 
 const DomainSummary = ({ entries }: { entries: [string, string][] }) => {
-    const { t } = useTranslation();
     return (
         <div className={"grid grid-cols-1 gap-2 sm:grid-cols-3"}>
             {entries.map(([key, value]) => (

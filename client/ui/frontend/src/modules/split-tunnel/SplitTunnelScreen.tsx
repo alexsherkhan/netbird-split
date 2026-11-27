@@ -371,6 +371,7 @@ export const SplitTunnelScreen = () => {
                 mode: draft.mode,
                 defaultAction: draft.defaultAction,
                 killSwitch: draft.killSwitch,
+                exitNodes: [],
                 rulesChanged: true,
                 rules: draft.rules.map(ruleToInput),
             });
