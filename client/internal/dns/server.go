@@ -499,6 +499,13 @@ func (s *DefaultServer) SetPeerActivator(a local.PeerActivator) {
 	s.localResolver.SetPeerActivator(a)
 }
 
+// SetResponseObserver installs the observer invoked for upstream responses
+// before they are released. The split tunnel tracker uses it to update kernel
+// domain sets synchronously. Pass nil to disable observation.
+func (s *DefaultServer) SetResponseObserver(observer ResponseObserver) {
+	s.handlerChain.SetResponseObserver(observer)
+}
+
 // Stop stops the server
 func (s *DefaultServer) Stop() {
 	s.ctxCancel()

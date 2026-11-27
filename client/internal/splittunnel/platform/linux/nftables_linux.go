@@ -11,6 +11,7 @@ import (
 	"github.com/google/nftables"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
 )
 
 type chainName string
@@ -32,8 +33,15 @@ const (
 	setBlocked6 setName = "blocked6"
 	setExit4    setName = "exit4"
 	setExit6    setName = "exit6"
-	setDomains4 setName = "domains4"
-	setDomains6 setName = "domains6"
+
+	// The original domains4/domains6 names are kept as the VPN domain sets so
+	// an existing owned table reconciles without a foreign-object error.
+	setDomains4      setName = "domains4"
+	setDomains6      setName = "domains6"
+	setDomainDirect4 setName = "domains_direct4"
+	setDomainDirect6 setName = "domains_direct6"
+	setDomainBlock4  setName = "domains_block4"
+	setDomainBlock6  setName = "domains_block6"
 )
 
 const domainSetTimeout = 5 * time.Minute
@@ -94,8 +102,58 @@ func setSpecs() []setSpec {
 		{name: setBlocked6, keyType: nftables.TypeIP6Addr, interval: true, comment: "split tunnel blocked prefixes, IPv6"},
 		{name: setExit4, keyType: nftables.TypeIPAddr, interval: true, comment: "split tunnel exit-node prefixes, IPv4"},
 		{name: setExit6, keyType: nftables.TypeIP6Addr, interval: true, comment: "split tunnel exit-node prefixes, IPv6"},
-		{name: setDomains4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel resolved domains, IPv4"},
-		{name: setDomains6, keyType: nftables.TypeIP6Addr, timeout: domainSetTimeout, comment: "split tunnel resolved domains, IPv6"},
+		{name: setDomains4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel VPN domains, IPv4"},
+		{name: setDomains6, keyType: nftables.TypeIP6Addr, timeout: domainSetTimeout, comment: "split tunnel VPN domains, IPv6"},
+		{name: setDomainDirect4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel direct domains, IPv4"},
+		{name: setDomainDirect6, keyType: nftables.TypeIP6Addr, timeout: domainSetTimeout, comment: "split tunnel direct domains, IPv6"},
+		{name: setDomainBlock4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel blocked domains, IPv4"},
+		{name: setDomainBlock6, keyType: nftables.TypeIP6Addr, timeout: domainSetTimeout, comment: "split tunnel blocked domains, IPv6"},
+	}
+}
+
+// domainSetNames lists the owned timeout sets that hold resolved addresses.
+func domainSetNames() []setName {
+	return []setName{
+		setDomains4, setDomains6,
+		setDomainDirect4, setDomainDirect6,
+		setDomainBlock4, setDomainBlock6,
+	}
+}
+
+// domainSetFor returns the owned timeout set for one class and family.
+func domainSetFor(class routeClass, family nftFamily) (setName, bool) {
+	switch class {
+	case classVPN:
+		if family == family6 {
+			return setDomains6, true
+		}
+		return setDomains4, true
+	case classDirect:
+		if family == family6 {
+			return setDomainDirect6, true
+		}
+		return setDomainDirect4, true
+	case classBlock:
+		if family == family6 {
+			return setDomainBlock6, true
+		}
+		return setDomainBlock4, true
+	default:
+		return "", false
+	}
+}
+
+// domainSetForAction maps a backend update action onto its owned set pair.
+func domainSetForAction(action config.Action, family nftFamily) (setName, bool) {
+	switch action {
+	case config.ActionVPN:
+		return domainSetFor(classVPN, family)
+	case config.ActionDirect:
+		return domainSetFor(classDirect, family)
+	case config.ActionBlock:
+		return domainSetFor(classBlock, family)
+	default:
+		return "", false
 	}
 }
 

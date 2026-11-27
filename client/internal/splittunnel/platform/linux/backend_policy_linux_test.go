@@ -124,10 +124,9 @@ func TestBackendApplyPolicyRejectsUnsupportedWithoutKernelChanges(t *testing.T) 
 	b := initializedBackend(t, manager, router)
 
 	compiled := mustCompile(t, includeConfig(
-		testRule("domain", config.ActionVPN, config.Condition{
-			Type:   config.ConditionDomain,
-			Domain: "example.com",
-		}),
+		testRule("domain", config.ActionVPN,
+			config.Condition{Type: config.ConditionDomain, Domain: "a.example.com"},
+			config.Condition{Type: config.ConditionDomain, Domain: "b.example.com"}),
 	))
 
 	err := b.ApplyPolicy(context.Background(), compiled, testOptions())

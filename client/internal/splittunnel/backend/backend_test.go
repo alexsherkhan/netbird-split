@@ -227,3 +227,39 @@ func TestApplicationScopeValidate(t *testing.T) {
 		require.Error(t, invalid.Validate(), "scope %+v must be rejected", invalid)
 	}
 }
+
+func TestValidateDomainSetUpdates(t *testing.T) {
+	valid := []DomainSetUpdate{
+		{
+			Action: config.ActionVPN,
+			Entries: []DomainEntry{
+				{Prefix: netip.MustParsePrefix("192.0.2.1/32")},
+			},
+		},
+		{
+			Action: config.ActionDirect,
+			Entries: []DomainEntry{
+				{Prefix: netip.MustParsePrefix("192.0.2.2/32")},
+			},
+		},
+		{Action: config.ActionBlock},
+	}
+	assert.NoError(t, ValidateDomainSetUpdates(valid))
+
+	duplicate := []DomainSetUpdate{
+		{
+			Action: config.ActionVPN,
+			Entries: []DomainEntry{
+				{Prefix: netip.MustParsePrefix("192.0.2.1/32")},
+			},
+		},
+		{
+			Action: config.ActionBlock,
+			Entries: []DomainEntry{
+				{Prefix: netip.MustParsePrefix("192.0.2.1/32")},
+			},
+		},
+	}
+	assert.Error(t, ValidateDomainSetUpdates(duplicate),
+		"one address must belong to exactly one action")
+}

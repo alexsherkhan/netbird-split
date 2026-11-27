@@ -522,11 +522,34 @@ func (u DomainSetUpdate) Validate() error {
 	return nil
 }
 
+// ValidateDomainSetUpdates validates a complete replacement of the domain sets.
+// An address may belong to exactly one action; the tracker resolves shared-IP
+// conflicts before calling a backend.
+func ValidateDomainSetUpdates(updates []DomainSetUpdate) error {
+	seen := make(map[netip.Prefix]config.Action)
+	for i := range updates {
+		update := &updates[i]
+		if err := update.Validate(); err != nil {
+			return fmt.Errorf("update %d: %w", i, err)
+		}
+		for _, entry := range update.Entries {
+			if other, ok := seen[entry.Prefix]; ok {
+				return fmt.Errorf("prefix %s is assigned to both %q and %q",
+					entry.Prefix, other, update.Action)
+			}
+			seen[entry.Prefix] = update.Action
+		}
+	}
+	return nil
+}
+
 // NetworkBackend is the platform surface used by the split tunnel engine.
 //
 // Initialize, Cleanup and Close are idempotent. ApplyPolicy and
 // UpdateDomainSets must return ErrNotImplemented when a backend does not act
 // on them; they must never report success without changing kernel state.
+// UpdateDomainSets replaces every owned domain set, so an omitted action is
+// cleared and an address never belongs to two actions.
 type NetworkBackend interface {
 	// Initialize probes capabilities and creates the backend's owned objects.
 	Initialize(ctx context.Context) error
@@ -534,8 +557,8 @@ type NetworkBackend interface {
 	// options. It replaces any previously applied policy and must never report
 	// success without changing kernel state.
 	ApplyPolicy(ctx context.Context, compiled *policy.CompiledPolicy, options PolicyOptions) error
-	// UpdateDomainSets replaces resolved domain addresses in the owned timeout
-	// sets. It returns ErrNotImplemented until DNS tracking lands.
+	// UpdateDomainSets replaces the contents of every owned domain timeout set
+	// with the supplied updates. Actions omitted from updates are cleared.
 	UpdateDomainSets(ctx context.Context, updates []DomainSetUpdate) error
 	// GetCapabilities probes kernel capabilities without changing state.
 	GetCapabilities(ctx context.Context) (Capabilities, error)

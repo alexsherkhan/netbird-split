@@ -5,7 +5,9 @@ package linux
 import (
 	"context"
 	"errors"
+	"net/netip"
 	"testing"
+	"time"
 
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -35,7 +37,10 @@ type fakeManager struct {
 	cleanupCalls    int
 	applyCalls      int
 	clearCalls      int
+	domainCalls     int
 	appliedPolicies []nftPolicy
+	domainUpdates   [][]backend.DomainSetUpdate
+	domainErr       error
 	owned           backend.OwnedObjects
 }
 
@@ -63,9 +68,24 @@ func (f *fakeManager) ApplyPolicy(_ context.Context, policy nftPolicy) error {
 	return f.applyPolicyErr
 }
 
+func (f *fakeManager) ApplyDomainSets(_ context.Context, updates []backend.DomainSetUpdate) error {
+	f.domainCalls++
+	f.domainUpdates = append(f.domainUpdates, cloneDomainUpdates(updates))
+	return f.domainErr
+}
+
 func (f *fakeManager) ClearPolicy(context.Context) error {
 	f.clearCalls++
 	return f.clearPolicyErr
+}
+
+func cloneDomainUpdates(updates []backend.DomainSetUpdate) []backend.DomainSetUpdate {
+	out := make([]backend.DomainSetUpdate, len(updates))
+	for i := range updates {
+		out[i].Action = updates[i].Action
+		out[i].Entries = append([]backend.DomainEntry(nil), updates[i].Entries...)
+	}
+	return out
 }
 
 type fakeRouter struct {
@@ -256,14 +276,84 @@ func TestApplyPolicyRejectsNilPolicy(t *testing.T) {
 	require.ErrorIs(t, err, backend.ErrInvalidPolicyOption)
 }
 
-func TestUpdateDomainSetsIsNotImplemented(t *testing.T) {
+func TestUpdateDomainSetsReplacesOwnedSets(t *testing.T) {
 	probe := &fakeProber{capabilities: availableCapabilities()}
-	b, _ := newTestBackend(probe, &fakeManager{createdTable: true})
+	manager := &fakeManager{createdTable: true}
+	b, _ := newTestBackend(probe, manager)
+
+	require.NoError(t, b.Initialize(context.Background()))
+
+	expires := time.Now().Add(time.Minute).UTC()
+	updates := []backend.DomainSetUpdate{
+		{
+			Action: config.ActionVPN,
+			Entries: []backend.DomainEntry{
+				{Prefix: netip.MustParsePrefix("192.0.2.1/32"), ExpiresAt: expires},
+				{Prefix: netip.MustParsePrefix("2001:db8::1/128"), ExpiresAt: expires},
+			},
+		},
+		{Action: config.ActionDirect},
+		{Action: config.ActionBlock},
+	}
+	require.NoError(t, b.UpdateDomainSets(context.Background(), updates))
+
+	require.Equal(t, 1, manager.domainCalls)
+	applied := manager.domainUpdates[0]
+	require.Len(t, applied, 3)
+	assert.Equal(t, config.ActionVPN, applied[0].Action)
+	assert.ElementsMatch(t, []netip.Prefix{
+		netip.MustParsePrefix("192.0.2.1/32"),
+		netip.MustParsePrefix("2001:db8::1/128"),
+	}, []netip.Prefix{
+		applied[0].Entries[0].Prefix, applied[0].Entries[1].Prefix,
+	})
+}
+
+func TestUpdateDomainSetsRejectsInvalidBatchBeforeKernelChanges(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{createdTable: true}
+	b, _ := newTestBackend(probe, manager)
+
+	require.NoError(t, b.Initialize(context.Background()))
+
+	err := b.UpdateDomainSets(context.Background(), []backend.DomainSetUpdate{
+		{
+			Action: config.ActionVPN,
+			Entries: []backend.DomainEntry{{
+				Prefix: netip.MustParsePrefix("192.0.2.2/32"),
+			}},
+		},
+		{
+			Action: config.ActionDirect,
+			Entries: []backend.DomainEntry{{
+				Prefix: netip.MustParsePrefix("192.0.2.2/32"),
+			}},
+		},
+	})
+	require.Error(t, err)
+	assert.Zero(t, manager.domainCalls, "an invalid batch must not touch kernel state")
+
+	err = b.UpdateDomainSets(context.Background(), []backend.DomainSetUpdate{{
+		Action: config.ActionExitNode,
+	}})
+	require.Error(t, err)
+	assert.Zero(t, manager.domainCalls)
+}
+
+func TestUpdateDomainSetsPropagatesBackendError(t *testing.T) {
+	applyErr := errors.New("domain set update failed")
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{createdTable: true, domainErr: applyErr}
+	b, _ := newTestBackend(probe, manager)
 
 	require.NoError(t, b.Initialize(context.Background()))
 
 	err := b.UpdateDomainSets(context.Background(), nil)
-	require.ErrorIs(t, err, backend.ErrNotImplemented)
+	require.ErrorIs(t, err, applyErr)
+
+	status, statusErr := b.GetStatus(context.Background())
+	require.NoError(t, statusErr)
+	assert.Contains(t, status.LastError, "domain set update failed")
 }
 
 func TestPolicyOperationsRequireInitialization(t *testing.T) {

@@ -74,10 +74,6 @@ func compilePolicyForWithResolver(
 		return nil, fmt.Errorf("kill switch mode %q: %w",
 			compiled.KillSwitch, backend.ErrNotImplemented)
 	}
-	if compiled.DNS.TrackingEnabled {
-		return nil, fmt.Errorf("DNS tracking: %w", backend.ErrNotImplemented)
-	}
-
 	applications, err := normalizeApplicationScopes(options.Applications)
 	if err != nil {
 		return nil, err
@@ -279,8 +275,12 @@ func compileCompiledRule(
 		if plan.unsatisfiable {
 			continue
 		}
+		if len(plan.domains) > 1 {
+			return nil, nil, nil, fmt.Errorf(
+				"multiple domain conditions in one rule: %w", backend.ErrUnsupportedCondition)
+		}
 		families, err := conjunctionFamilies(
-			plan.prefixes, plan.hasProtocol(), plan.hasIdentity(), enableIPv6)
+			plan.prefixes, plan.hasProtocol(), plan.hasIdentity(), plan.hasDomain(), enableIPv6)
 		if err != nil {
 			return nil, nil, nil, err
 		}
@@ -290,7 +290,7 @@ func compileCompiledRule(
 
 		if plan.hasApplications() {
 			compiled, err := compileApplicationRules(
-				plan, applications, families, allocation.mark.Value, resolver)
+				class, plan, applications, families, allocation.mark.Value, resolver)
 			if err != nil {
 				return nil, nil, nil, err
 			}
@@ -301,9 +301,13 @@ func compileCompiledRule(
 			uid := *plan.uid
 			for _, family := range families {
 				familyPrefixes := prefixesOfFamily(plan.prefixes, family)
+				matches, err := literalConjunctionMatches(class, family, familyPrefixes, plan)
+				if err != nil {
+					return nil, nil, nil, err
+				}
 				rules = append(rules, nftRule{
 					family:  family,
-					matches: literalMatches(familyPrefixes, plan.protocols),
+					matches: matches,
 					uid:     &uid,
 					mark:    allocation.mark.Value,
 				})
@@ -336,6 +340,7 @@ func compileCompiledRule(
 }
 
 func compileApplicationRules(
+	class routeClass,
 	plan conjunctionPlan,
 	applications []backend.ApplicationScope,
 	families []nftFamily,
@@ -353,9 +358,13 @@ func compileApplicationRules(
 		}
 		for _, family := range families {
 			familyPrefixes := prefixesOfFamily(plan.prefixes, family)
+			matches, err := literalConjunctionMatches(class, family, familyPrefixes, plan)
+			if err != nil {
+				return nil, err
+			}
 			rules = append(rules, nftRule{
 				family:  family,
-				matches: literalMatches(familyPrefixes, plan.protocols),
+				matches: matches,
 				cgroup:  &cgroup,
 				mark:    mark,
 			})
@@ -402,6 +411,7 @@ func conjunctionFamilies(
 	prefixes []netip.Prefix,
 	hasProtocol bool,
 	hasIdentity bool,
+	hasDomain bool,
 	enableIPv6 bool,
 ) ([]nftFamily, error) {
 	var has4, has6 bool
@@ -427,7 +437,7 @@ func conjunctionFamilies(
 		return []nftFamily{family6}, nil
 	case has4:
 		return []nftFamily{family4}, nil
-	case hasProtocol || hasIdentity:
+	case hasProtocol || hasIdentity || hasDomain:
 		if enableIPv6 {
 			return []nftFamily{family4, family6}, nil
 		}
@@ -444,14 +454,46 @@ func conjunctionMatches(
 	plan conjunctionPlan,
 	useSet bool,
 ) ([]nftMatch, error) {
+	var matches []nftMatch
+	domainSet, err := domainMatch(class, family, plan)
+	if err != nil {
+		return nil, err
+	}
+	matches = append(matches, domainSet...)
+
 	if useSet {
 		set := setForClassFamily(class, family)
 		if set == "" {
 			return nil, fmt.Errorf("no prefix set for class %q family %v", class, family)
 		}
-		return []nftMatch{{set: set}}, nil
+		matches = append(matches, nftMatch{set: set})
+		return matches, nil
 	}
-	return literalMatches(prefixes, plan.protocols), nil
+	return append(matches, literalMatches(prefixes, plan.protocols)...), nil
+}
+
+func literalConjunctionMatches(
+	class routeClass,
+	family nftFamily,
+	prefixes []netip.Prefix,
+	plan conjunctionPlan,
+) ([]nftMatch, error) {
+	matches, err := domainMatch(class, family, plan)
+	if err != nil {
+		return nil, err
+	}
+	return append(matches, literalMatches(prefixes, plan.protocols)...), nil
+}
+
+func domainMatch(class routeClass, family nftFamily, plan conjunctionPlan) ([]nftMatch, error) {
+	if !plan.hasDomain() {
+		return nil, nil
+	}
+	set, ok := domainSetFor(class, family)
+	if !ok {
+		return nil, fmt.Errorf("no domain set for class %q family %v", class, family)
+	}
+	return []nftMatch{{set: set}}, nil
 }
 
 func literalMatches(prefixes []netip.Prefix, protocols []config.Condition) []nftMatch {
@@ -482,12 +524,17 @@ type conjunctionPlan struct {
 	prefixes      []netip.Prefix
 	protocols     []config.Condition
 	applications  []config.Condition
+	domains       []config.Condition
 	uid           *uint32
 	unsatisfiable bool
 }
 
 func (p conjunctionPlan) hasProtocol() bool {
 	return len(p.protocols) > 0
+}
+
+func (p conjunctionPlan) hasDomain() bool {
+	return len(p.domains) > 0
 }
 
 func (p conjunctionPlan) hasApplications() bool {
@@ -527,6 +574,16 @@ func parseConjunction(conjunction []config.Condition) (conjunctionPlan, error) {
 				continue
 			}
 			plan.uid = &uid
+		case config.ConditionDomain, config.ConditionWildcardDomain:
+			if condition.Type == config.ConditionDomain && condition.Domain == "" {
+				return conjunctionPlan{}, fmt.Errorf("domain condition has an empty name: %w",
+					backend.ErrUnsupportedCondition)
+			}
+			if condition.Type == config.ConditionWildcardDomain && condition.Wildcard == "" {
+				return conjunctionPlan{}, fmt.Errorf("wildcard domain condition has an empty name: %w",
+					backend.ErrUnsupportedCondition)
+			}
+			plan.domains = append(plan.domains, condition)
 		default:
 			return conjunctionPlan{}, &backend.UnsupportedConditionError{
 				Condition: condition.Type,
@@ -625,6 +682,8 @@ func conditionConjunctions(condition *config.Condition, count int) ([][]config.C
 		}}, nil
 	case config.ConditionDesktopID, config.ConditionExecutable,
 		config.ConditionFlatpakID, config.ConditionSnapID:
+		return [][]config.Condition{{*condition}}, nil
+	case config.ConditionDomain, config.ConditionWildcardDomain:
 		return [][]config.Condition{{*condition}}, nil
 	case config.ConditionUID:
 		if condition.UID == nil {
