@@ -319,29 +319,15 @@ func TestCompilePolicyIPv6VPNWithoutTargetFailsClosed(t *testing.T) {
 		"protected IPv6 without an overlay target must be unreachable")
 }
 
-func TestCompilePolicyIPv6UnsupportedConditions(t *testing.T) {
-	tests := []struct {
-		name      string
-		condition config.Condition
-	}{
-		{name: "domain", condition: config.Condition{Type: config.ConditionDomain, Domain: "example.com"}},
-		{name: "wildcard domain", condition: config.Condition{Type: config.ConditionWildcardDomain, Wildcard: "example.com"}},
-	}
+func TestCompilePolicyRejectsIPv6DomainWithCIDR(t *testing.T) {
+	cfg := includeConfig(testRule("vpn6", config.ActionVPN,
+		ipv6CIDRCondition("2001:db8::/32"),
+		config.Condition{Type: config.ConditionWildcardDomain, Wildcard: "example.com"}))
+	cfg.SplitTunnel.IPv6 = true
+	compiled := mustCompile(t, cfg)
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			cfg := includeConfig(testRule("vpn6", config.ActionVPN,
-				ipv6CIDRCondition("2001:db8::/32"), tt.condition))
-			cfg.SplitTunnel.IPv6 = true
-			compiled := mustCompile(t, cfg)
-
-			_, err := compilePolicy(compiled, testOptions6(), testAllocations(t))
-			require.ErrorIs(t, err, backend.ErrUnsupportedCondition)
-			var conditionErr *backend.UnsupportedConditionError
-			require.ErrorAs(t, err, &conditionErr)
-			assert.Equal(t, tt.condition.Type, conditionErr.Condition)
-		})
-	}
+	_, err := compilePolicy(compiled, testOptions6(), testAllocations(t))
+	require.ErrorIs(t, err, backend.ErrUnsupportedCondition)
 }
 
 func TestCompilePolicyRejectsMixedFamilyConjunction(t *testing.T) {

@@ -10,6 +10,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
 )
 
 func TestNFTablesDefaultTableName(t *testing.T) {
@@ -40,7 +41,7 @@ func TestNFTablesCatalogIsCompleteAndUnique(t *testing.T) {
 	}
 
 	sets := setSpecs()
-	require.Len(t, sets, 10)
+	require.Len(t, sets, 14)
 	setNames := make(map[setName]struct{}, len(sets))
 	for _, spec := range sets {
 		assert.NotEmpty(t, spec.name)
@@ -54,6 +55,8 @@ func TestNFTablesCatalogIsCompleteAndUnique(t *testing.T) {
 		setBlocked4, setBlocked6,
 		setExit4, setExit6,
 		setDomains4, setDomains6,
+		setDomainDirect4, setDomainDirect6,
+		setDomainBlock4, setDomainBlock6,
 	} {
 		_, ok := setNames[name]
 		assert.True(t, ok, "set %q must be owned", name)
@@ -100,9 +103,10 @@ func TestNFTablesIntervalAndTimeoutSets(t *testing.T) {
 
 	assert.Equal(t, nftables.TypeIPAddr, specs[setVPN4].keyType)
 	assert.Equal(t, nftables.TypeIP6Addr, specs[setVPN6].keyType)
-	assert.False(t, specs[setDomains4].interval, "domain address sets are not interval sets")
-	assert.True(t, specs[setDomains4].timeout > 0, "domain address sets must use timeouts")
-	assert.True(t, specs[setDomains6].timeout > 0, "domain address sets must use timeouts")
+	for _, name := range domainSetNames() {
+		assert.False(t, specs[name].interval, "domain address set %q is not an interval set", name)
+		assert.True(t, specs[name].timeout > 0, "domain address set %q must use timeouts", name)
+	}
 }
 
 func TestNewNFTablesManagerRejectsEmptyTable(t *testing.T) {
@@ -117,7 +121,7 @@ func TestNFTablesOwnedObjects(t *testing.T) {
 	owned := manager.Owned()
 	assert.Equal(t, defaultTableName, owned.Table)
 	assert.Len(t, owned.Chains, 4)
-	assert.Len(t, owned.Sets, 10)
+	assert.Len(t, owned.Sets, 14)
 }
 
 func TestVerifyExistingChains(t *testing.T) {
@@ -182,4 +186,28 @@ func TestOwnedRuleMarker(t *testing.T) {
 	assert.True(t, isOwnedRule(&nftables.Rule{UserData: ownedRuleUserData}))
 	assert.False(t, isOwnedRule(&nftables.Rule{}))
 	assert.False(t, isOwnedRule(&nftables.Rule{UserData: []byte("someone-else")}))
+}
+
+func TestDomainSetMapping(t *testing.T) {
+	tests := []struct {
+		action config.Action
+		family nftFamily
+		want   setName
+	}{
+		{action: config.ActionVPN, family: family4, want: setDomains4},
+		{action: config.ActionVPN, family: family6, want: setDomains6},
+		{action: config.ActionDirect, family: family4, want: setDomainDirect4},
+		{action: config.ActionDirect, family: family6, want: setDomainDirect6},
+		{action: config.ActionBlock, family: family4, want: setDomainBlock4},
+		{action: config.ActionBlock, family: family6, want: setDomainBlock6},
+	}
+
+	for _, tt := range tests {
+		set, ok := domainSetForAction(tt.action, tt.family)
+		require.True(t, ok, "action %s family %v must have an owned domain set", tt.action, tt.family)
+		assert.Equal(t, tt.want, set)
+	}
+
+	_, ok := domainSetForAction(config.ActionExitNode, family4)
+	assert.False(t, ok, "exit-node domain sets are not supported")
 }

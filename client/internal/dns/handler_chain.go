@@ -40,10 +40,19 @@ type HandlerEntry struct {
 	MatchSubdomains bool
 }
 
+// ResponseObserver observes a DNS response immediately before it is released.
+// It is only invoked for upstream, default and fallback handlers, so local
+// zones, DNS routes and the management cache keep precedence. A returned error
+// prevents the response from being written.
+type ResponseObserver interface {
+	ObserveResponse(req, resp *dns.Msg) error
+}
+
 // HandlerChain represents a prioritized chain of DNS handlers
 type HandlerChain struct {
 	mu       sync.RWMutex
 	handlers []HandlerEntry
+	observer ResponseObserver
 }
 
 // ResponseWriterChain wraps a dns.ResponseWriter to track if handler wants to continue chain
@@ -51,6 +60,8 @@ type ResponseWriterChain struct {
 	dns.ResponseWriter
 	origPattern    string
 	requestID      string
+	request        *dns.Msg
+	observer       ResponseObserver
 	shouldContinue bool
 	response       *dns.Msg
 	meta           map[string]string
@@ -75,6 +86,11 @@ func (w *ResponseWriterChain) WriteMsg(m *dns.Msg) error {
 		w.shouldContinue = true
 		return nil
 	}
+	if w.observer != nil {
+		if err := w.observer.ObserveResponse(w.request, m); err != nil {
+			return err
+		}
+	}
 	w.response = m
 	if m.MsgHdr.Truncated {
 		w.SetMeta("truncated", "true")
@@ -86,6 +102,14 @@ func NewHandlerChain() *HandlerChain {
 	return &HandlerChain{
 		handlers: make([]HandlerEntry, 0),
 	}
+}
+
+// SetResponseObserver installs or clears the observer invoked before an
+// upstream response is released. It is safe to call while the chain is serving.
+func (c *HandlerChain) SetResponseObserver(observer ResponseObserver) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.observer = observer
 }
 
 // GetOrigPattern returns the original pattern of the handler that wrote the response
@@ -221,6 +245,7 @@ func (c *HandlerChain) dispatch(w dns.ResponseWriter, r *dns.Msg, maxPriority in
 
 	c.mu.RLock()
 	handlers := slices.Clone(c.handlers)
+	observer := c.observer
 	c.mu.RUnlock()
 
 	// Try handlers in priority order
@@ -245,6 +270,10 @@ func (c *HandlerChain) dispatch(w dns.ResponseWriter, r *dns.Msg, maxPriority in
 			ResponseWriter: w,
 			origPattern:    entry.OrigPattern,
 			requestID:      requestID,
+			request:        r,
+		}
+		if observer != nil && entry.Priority <= PriorityUpstream {
+			chainWriter.observer = observer
 		}
 		entry.Handler.ServeDNS(chainWriter, r)
 

@@ -8,12 +8,14 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"time"
 
 	"github.com/google/nftables"
 	"github.com/google/nftables/binaryutil"
 	"github.com/google/nftables/expr"
 	"golang.org/x/sys/unix"
 
+	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
 )
 
@@ -109,7 +111,7 @@ func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) err
 		return fmt.Errorf("owned chain %q is missing", chainClassifyOutput)
 	}
 
-	sets, err := m.policySets()
+	sets, err := m.ownedSets()
 	if err != nil {
 		return err
 	}
@@ -122,6 +124,9 @@ func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) err
 		}
 	}
 	for _, name := range policySetNames() {
+		m.conn.FlushSet(sets[name])
+	}
+	for _, name := range domainSetNames() {
 		m.conn.FlushSet(sets[name])
 	}
 	for _, name := range policySetNames() {
@@ -183,7 +188,7 @@ func (m *nftablesManager) ClearPolicy(ctx context.Context) error {
 		return err
 	}
 
-	sets, err := m.policySets()
+	sets, err := m.ownedSets()
 	if err != nil {
 		return err
 	}
@@ -198,9 +203,77 @@ func (m *nftablesManager) ClearPolicy(ctx context.Context) error {
 	for _, name := range policySetNames() {
 		m.conn.FlushSet(sets[name])
 	}
+	for _, name := range domainSetNames() {
+		m.conn.FlushSet(sets[name])
+	}
 
 	if err := m.conn.Flush(); err != nil {
 		return fmt.Errorf("clear owned nftables policy: %w", err)
+	}
+	return nil
+}
+
+// ApplyDomainSets replaces every owned domain timeout set with the supplied
+// entries. The whole replacement flushes in one batch so a stale address cannot
+// survive a shorter TTL or a policy change.
+func (m *nftablesManager) ApplyDomainSets(ctx context.Context, updates []backend.DomainSetUpdate) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.table == nil {
+		return errors.New("nftables table is not initialized")
+	}
+	if err := m.verifySets(); err != nil {
+		return err
+	}
+
+	sets, err := m.ownedSets()
+	if err != nil {
+		return err
+	}
+	for _, name := range domainSetNames() {
+		m.conn.FlushSet(sets[name])
+	}
+
+	now := time.Now()
+	elements := make(map[setName][]nftables.SetElement, len(domainSetNames()))
+	for i := range updates {
+		update := &updates[i]
+		for _, entry := range update.Entries {
+			family := familyOfPrefix(entry.Prefix)
+			set, ok := domainSetForAction(update.Action, family)
+			if !ok {
+				return fmt.Errorf("no owned domain set for action %q family %v",
+					update.Action, family)
+			}
+			timeout := domainSetTimeout
+			if !entry.ExpiresAt.IsZero() {
+				timeout = entry.ExpiresAt.Sub(now)
+				if timeout <= 0 {
+					continue
+				}
+				// A zero millisecond value would be encoded as no timeout.
+				if timeout < time.Millisecond {
+					timeout = time.Millisecond
+				}
+			}
+			elements[set] = append(elements[set], nftables.SetElement{
+				Key:     entry.Prefix.Addr().AsSlice(),
+				Timeout: timeout,
+			})
+		}
+	}
+
+	for _, name := range domainSetNames() {
+		if len(elements[name]) == 0 {
+			continue
+		}
+		if err := m.conn.SetAddElements(sets[name], elements[name]); err != nil {
+			return fmt.Errorf("add resolved addresses to set %q: %w", name, err)
+		}
+	}
+	if err := m.conn.Flush(); err != nil {
+		return fmt.Errorf("apply owned domain sets: %w", err)
 	}
 	return nil
 }
@@ -213,22 +286,23 @@ func (m *nftablesManager) verifySets() error {
 	return verifyExistingSets(sets, m.table)
 }
 
-func (m *nftablesManager) policySets() (map[setName]*nftables.Set, error) {
+func (m *nftablesManager) ownedSets() (map[setName]*nftables.Set, error) {
 	sets, err := m.conn.GetSets(m.table)
 	if err != nil {
 		return nil, fmt.Errorf("list nftables sets: %w", err)
 	}
 
-	owned := make(map[setName]*nftables.Set, len(policySetNames()))
+	wanted := append(policySetNames(), domainSetNames()...)
+	owned := make(map[setName]*nftables.Set, len(wanted))
 	for _, set := range sets {
 		name := setName(set.Name)
-		for _, wanted := range policySetNames() {
-			if name == wanted {
-				owned[wanted] = set
+		for _, expected := range wanted {
+			if name == expected {
+				owned[expected] = set
 			}
 		}
 	}
-	for _, name := range policySetNames() {
+	for _, name := range wanted {
 		if owned[name] == nil {
 			return nil, fmt.Errorf("owned set %q is missing", name)
 		}
@@ -335,7 +409,8 @@ const (
 
 func setFamily(name setName) nftFamily {
 	switch name {
-	case setVPN6, setDirect6, setBlocked6, setExit6:
+	case setVPN6, setDirect6, setBlocked6, setExit6,
+		setDomains6, setDomainDirect6, setDomainBlock6:
 		return family6
 	default:
 		return family4

@@ -8,8 +8,8 @@
 // rules tagged with the backend marker and only routes and policy rules
 // allocated from the split ranges. The IPv6 path runs only when the policy
 // enables it and the host has a usable IPv6 stack; otherwise IPv4 is applied
-// unchanged. DNS tracking, application classification, kill switch modes and
-// crash recovery are later milestones.
+// unchanged. Resolved domain addresses are kept in owned timeout sets. Kill
+// switch modes and crash recovery are later milestones.
 package linux
 
 import (
@@ -45,6 +45,7 @@ type nftManager interface {
 	CreatedTable() bool
 	Owned() backend.OwnedObjects
 	ApplyPolicy(ctx context.Context, policy nftPolicy) error
+	ApplyDomainSets(ctx context.Context, updates []backend.DomainSetUpdate) error
 	ClearPolicy(ctx context.Context) error
 }
 
@@ -240,8 +241,9 @@ func (b *Backend) ApplyPolicy(
 	return nil
 }
 
-// UpdateDomainSets is reserved for M08 and currently fails with
-// ErrNotImplemented.
+// UpdateDomainSets replaces the owned domain timeout sets with the resolved
+// addresses. It validates the whole batch before touching kernel state so a
+// malformed or ambiguous update leaves the previous sets intact.
 func (b *Backend) UpdateDomainSets(ctx context.Context, updates []backend.DomainSetUpdate) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -256,9 +258,17 @@ func (b *Backend) UpdateDomainSets(ctx context.Context, updates []backend.Domain
 	if !b.initialized {
 		return backend.ErrNotInitialized
 	}
+	if err := backend.ValidateDomainSetUpdates(updates); err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("validate domain sets: %w", err)
+	}
 
-	_ = updates
-	return &backend.NotImplementedError{Operation: "update domain sets"}
+	if err := b.nft.ApplyDomainSets(ctx, updates); err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("apply domain sets: %w", err)
+	}
+	b.updatedAt = time.Now().UTC()
+	return nil
 }
 
 // GetCapabilities probes kernel capabilities without changing kernel state.

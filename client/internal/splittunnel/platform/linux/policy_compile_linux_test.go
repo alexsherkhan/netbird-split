@@ -189,27 +189,119 @@ func TestCompilePolicyCustomDefaultBlock(t *testing.T) {
 	assert.True(t, block.protected)
 }
 
-func TestCompilePolicyRejectsUnsupportedConditions(t *testing.T) {
-	tests := []struct {
-		name      string
-		condition config.Condition
-	}{
-		{name: "domain", condition: config.Condition{Type: config.ConditionDomain, Domain: "example.com"}},
-		{name: "wildcard domain", condition: config.Condition{Type: config.ConditionWildcardDomain, Wildcard: "example.com"}},
+func TestCompilePolicyDomainConditions(t *testing.T) {
+	cfg := includeConfig(
+		testRule("exact", config.ActionVPN, config.Condition{
+			Type:   config.ConditionDomain,
+			Domain: "api.example.com",
+		}),
+		testRule("wildcard", config.ActionBlock, config.Condition{
+			Type:     config.ConditionWildcardDomain,
+			Wildcard: "example.com",
+		}),
+	)
+	cfg.SplitTunnel.IPv6 = true
+	compiled := mustCompile(t, cfg)
+	allocations := testAllocations(t)
+
+	plan, err := compilePolicy(compiled, testOptions6(), allocations)
+	require.NoError(t, err)
+
+	vpnRules := rulesWithMark(plan, allocations.byClass[classVPN].mark.Value)
+	require.Len(t, vpnRules, 2, "an exact domain rule must emit one rule per family")
+	assert.Equal(t, family4, vpnRules[0].family)
+	assert.Equal(t, setDomains4, vpnRules[0].matches[0].set)
+	assert.Equal(t, family6, vpnRules[1].family)
+	assert.Equal(t, setDomains6, vpnRules[1].matches[0].set)
+
+	blockRules := rulesWithMark(plan, allocations.byClass[classBlock].mark.Value)
+	require.Len(t, blockRules, 2, "a wildcard block rule must emit one rule per family")
+	assert.Equal(t, setDomainBlock4, blockRules[0].matches[0].set)
+	assert.Equal(t, setDomainBlock6, blockRules[1].matches[0].set)
+
+	assert.Empty(t, plan.nft.sets[setVPN4], "a domain rule must not fill the prefix set")
+	assert.Empty(t, plan.nft.sets[setBlocked4], "a domain block rule must not fill the prefix set")
+}
+
+func TestCompilePolicyRejectsDomainWithCIDR(t *testing.T) {
+	compiled := mustCompile(t, includeConfig(
+		testRule("vpn", config.ActionVPN,
+			config.Condition{Type: config.ConditionDomain, Domain: "example.com"},
+			cidrCondition("10.0.0.0/8")),
+	))
+
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, backend.ErrUnsupportedCondition)
+}
+
+func TestCompilePolicyRejectsDomainWithProtocol(t *testing.T) {
+	compiled := mustCompile(t, includeConfig(
+		testRule("vpn", config.ActionVPN,
+			config.Condition{Type: config.ConditionDomain, Domain: "example.com"},
+			portCondition(config.ProtocolTCP, 443)),
+	))
+
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, backend.ErrUnsupportedCondition)
+}
+
+func TestCompilePolicyRejectsMultipleDomainConditions(t *testing.T) {
+	compiled := mustCompile(t, includeConfig(
+		testRule("two", config.ActionVPN,
+			config.Condition{Type: config.ConditionDomain, Domain: "a.example.com"},
+			config.Condition{Type: config.ConditionDomain, Domain: "b.example.com"}),
+	))
+
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.ErrorIs(t, err, backend.ErrUnsupportedCondition)
+}
+
+func TestCompilePolicyIPv6DomainRuleFollowsIPv6Setting(t *testing.T) {
+	cfg := includeConfig(testRule("exact", config.ActionVPN, config.Condition{
+		Type:   config.ConditionDomain,
+		Domain: "example.com",
+	}))
+
+	compiled := mustCompile(t, cfg)
+	plan, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.NoError(t, err)
+	for _, rule := range plan.nft.rules {
+		assert.NotEqual(t, family6, rule.family, "a disabled IPv6 policy must not emit v6 rules")
 	}
 
-	for _, tt := range tests {
-		t.Run(tt.name, func(t *testing.T) {
-			compiled := mustCompile(t, includeConfig(
-				testRule("rule", config.ActionVPN, tt.condition),
-			))
-			_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
-			require.ErrorIs(t, err, backend.ErrUnsupportedCondition)
-			var conditionErr *backend.UnsupportedConditionError
-			require.True(t, errors.As(err, &conditionErr))
-			assert.Equal(t, tt.condition.Type, conditionErr.Condition)
-		})
+	cfg.SplitTunnel.IPv6 = true
+	compiled = mustCompile(t, cfg)
+	plan, err = compilePolicy(compiled, testOptions6(), testAllocations(t))
+	require.NoError(t, err)
+
+	seen6 := false
+	for _, rule := range plan.nft.rules {
+		if rule.family == family6 && hasSetMatch(rule, setDomains6) {
+			seen6 = true
+		}
 	}
+	assert.True(t, seen6, "an IPv6-enabled domain rule must use the v6 domain set")
+}
+
+func rulesWithMark(plan *policyPlan, mark uint32) []nftRule {
+	var rules []nftRule
+	for _, rule := range plan.nft.rules {
+		if rule.mark == mark {
+			rules = append(rules, rule)
+		}
+	}
+	return rules
+}
+
+func hasSetMatch(rule nftRule, want setName) bool {
+	for _, match := range rule.matches {
+		if match.set == want {
+			return true
+		}
+	}
+	return false
 }
 
 func TestCompilePolicyIPv6DisabledSkipsV6(t *testing.T) {
@@ -230,24 +322,22 @@ func TestCompilePolicyIPv6DisabledSkipsV6(t *testing.T) {
 	assert.Equal(t, family4, last.family, "the IPv4 default rule must still be installed")
 }
 
-func TestCompilePolicyRejectsKillSwitchAndDNS(t *testing.T) {
-	t.Run("kill switch", func(t *testing.T) {
-		cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
-		cfg.SplitTunnel.KillSwitch = config.KillSwitchSelective
-		compiled := mustCompile(t, cfg)
+func TestCompilePolicyRejectsKillSwitch(t *testing.T) {
+	cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
+	cfg.SplitTunnel.KillSwitch = config.KillSwitchSelective
+	compiled := mustCompile(t, cfg)
 
-		_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
-		require.ErrorIs(t, err, backend.ErrNotImplemented)
-	})
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.ErrorIs(t, err, backend.ErrNotImplemented)
+}
 
-	t.Run("DNS tracking", func(t *testing.T) {
-		cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
-		cfg.SplitTunnel.DNS.TrackingEnabled = true
-		compiled := mustCompile(t, cfg)
+func TestCompilePolicyAcceptsDNSTracking(t *testing.T) {
+	cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
+	cfg.SplitTunnel.DNS.TrackingEnabled = true
+	compiled := mustCompile(t, cfg)
 
-		_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
-		require.ErrorIs(t, err, backend.ErrNotImplemented)
-	})
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.NoError(t, err)
 }
 
 func TestCompilePolicyRejectsExitNodeMismatch(t *testing.T) {
