@@ -61,6 +61,10 @@ export const formatErrorMessage = (e: unknown): string => {
 // privileges). Empty for every other error.
 export const errorCommand = (e: unknown): string => classify(e)?.command ?? "";
 
+// errorCode returns the stable code the daemon classifier attached to an error,
+// or an empty string when the error carries none.
+export const errorCode = (e: unknown): string => classify(e)?.code ?? "";
+
 // isDaemonUnavailable reports whether an error means the daemon could not be
 // reached or refuses this user. Matches the classified code first and the raw
 // gRPC status text second, since not every service classifies its errors.

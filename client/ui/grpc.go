@@ -21,8 +21,10 @@ import (
 type Conn struct {
 	addr string
 
-	mu     sync.Mutex
-	client proto.DaemonServiceClient
+	mu          sync.Mutex
+	cc          *grpc.ClientConn
+	client      proto.DaemonServiceClient
+	splitTunnel proto.SplitTunnelServiceClient
 }
 
 func NewConn(addr string) *Conn {
@@ -34,6 +36,36 @@ func (c *Conn) Client() (proto.DaemonServiceClient, error) {
 	defer c.mu.Unlock()
 	if c.client != nil {
 		return c.client, nil
+	}
+	cc, err := c.clientConnLocked()
+	if err != nil {
+		return nil, err
+	}
+	c.client = proto.NewDaemonServiceClient(cc)
+	return c.client, nil
+}
+
+// SplitTunnelClient returns a client for the split tunnel service over the same
+// lazily dialled channel as Client.
+func (c *Conn) SplitTunnelClient() (proto.SplitTunnelServiceClient, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.splitTunnel != nil {
+		return c.splitTunnel, nil
+	}
+	cc, err := c.clientConnLocked()
+	if err != nil {
+		return nil, err
+	}
+	c.splitTunnel = proto.NewSplitTunnelServiceClient(cc)
+	return c.splitTunnel, nil
+}
+
+// clientConnLocked returns the shared channel, dialling it on first use. The
+// caller must hold c.mu.
+func (c *Conn) clientConnLocked() (*grpc.ClientConn, error) {
+	if c.cc != nil {
+		return c.cc, nil
 	}
 
 	// Lazy on purpose: grpc.NewClient does not connect here, so a daemon that
@@ -57,8 +89,8 @@ func (c *Conn) Client() (proto.DaemonServiceClient, error) {
 	if err != nil {
 		return nil, fmt.Errorf("dial daemon: %w", err)
 	}
-	c.client = proto.NewDaemonServiceClient(cc)
-	return c.client, nil
+	c.cc = cc
+	return cc, nil
 }
 
 // DeniesCaller reports whether the daemon socket refuses this user.
