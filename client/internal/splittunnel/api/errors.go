@@ -25,6 +25,7 @@ const (
 	ReasonInvalidRequest     = "INVALID_REQUEST"
 	ReasonUnsupportedVersion = "UNSUPPORTED_API_VERSION"
 	ReasonNotImplemented     = "NOT_IMPLEMENTED"
+	ReasonBackendUnavailable = "BACKEND_UNAVAILABLE"
 	ReasonRateLimited        = "RATE_LIMITED"
 	ReasonInternal           = "INTERNAL"
 )
@@ -85,6 +86,9 @@ func mapBackendError(err error) error {
 			"split tunnel operation is not implemented", nil)
 	case errors.Is(err, ErrRevisionConflict):
 		return revisionConflict()
+	case errors.Is(err, ErrBackendUnavailable):
+		return errorWithReason(codes.Unavailable, ReasonBackendUnavailable,
+			"split tunnel backend is unavailable", nil)
 	case errors.Is(err, context.Canceled), errors.Is(err, context.DeadlineExceeded):
 		return status.FromContextError(err).Err()
 	}

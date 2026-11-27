@@ -45,6 +45,7 @@ func NewCommand(opts Options) *cobra.Command {
 	root.AddCommand(r.ipCmd())
 	root.AddCommand(r.cidrCmd())
 	root.AddCommand(r.profileCmd())
+	root.AddCommand(r.configCmd())
 	root.AddCommand(r.exportCmd())
 	root.AddCommand(r.importCmd())
 	root.AddCommand(r.traceCmd())

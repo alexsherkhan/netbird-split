@@ -44,6 +44,9 @@ var (
 	// ErrRevisionConflict reports that the caller's expected configuration
 	// revision is stale.
 	ErrRevisionConflict = errors.New("split tunnel configuration revision conflict")
+	// ErrBackendUnavailable reports that the split tunnel engine cannot be
+	// reached, for example because the platform backend failed to initialize.
+	ErrBackendUnavailable = errors.New("split tunnel backend is unavailable")
 )
 
 // ConfigStore is the persistent configuration surface of the split tunnel
