@@ -1,0 +1,46 @@
+[Unit]
+Description=NetBird Split Tunnel Client
+Documentation=https://github.com/alexsherkhan/netbird-split
+After=network-online.target syslog.target NetworkManager.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+EnvironmentFile=-/etc/default/netbird-split
+Environment=NB_STATE_DIR=/var/lib/netbird-split
+Environment=NB_RUNTIME_DIR=/run/netbird-split
+ExecStart=/usr/bin/netbird-split service run --daemon-addr unix:///run/netbird-split/netbird-split.sock --log-file /var/log/netbird-split/client.log $FLAGS
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=30
+RuntimeDirectory=netbird-split
+RuntimeDirectoryMode=0755
+StateDirectory=netbird-split
+StateDirectoryMode=0750
+LogsDirectory=netbird-split
+LogsDirectoryMode=0750
+ConfigurationDirectory=netbird-split
+ConfigurationDirectoryMode=0750
+
+# Sandboxing mirrors the upstream netbird unit so the split client behaves the
+# same way when it programs the interface, routes and firewall.
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+NoNewPrivileges=yes
+PrivateMounts=yes
+PrivateTmp=yes
+ProtectClock=yes
+ProtectControlGroups=yes
+ProtectHome=yes
+ProtectHostname=yes
+ProtectKernelLogs=yes
+ProtectKernelModules=no
+ProtectKernelTunables=no
+ProtectSystem=yes
+RemoveIPC=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+
+[Install]
+WantedBy=multi-user.target

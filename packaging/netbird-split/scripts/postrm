@@ -1,0 +1,65 @@
+#!/bin/sh
+set -eu
+
+NB_SPLIT_TEST_MODE="${NETBIRD_SPLIT_TEST_MODE:-0}"
+NB_SPLIT_ROOT=""
+if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+    if [ -n "${DPKG_MAINTSCRIPT_PACKAGE:-}" ]; then
+        echo "netbird-split: refusing test mode while dpkg runs a maintainer script" >&2
+        exit 1
+    fi
+    NB_SPLIT_ROOT="${NETBIRD_SPLIT_TEST_ROOT:-}"
+    case "$NB_SPLIT_ROOT" in
+        /tmp/* | /var/tmp/*) ;;
+        *)
+            echo "netbird-split: NETBIRD_SPLIT_TEST_ROOT must be under /tmp or /var/tmp" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+split_path() {
+    printf '%s%s' "$NB_SPLIT_ROOT" "$1"
+}
+
+action_log="$(split_path /var/log/netbird-split-package-actions.log)"
+
+record_action() {
+    if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+        mkdir -p "$(dirname "$action_log")"
+        printf '%s\n' "$*" >> "$action_log"
+    fi
+}
+
+daemon_reload() {
+    if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+        record_action "systemctl daemon-reload"
+        return 0
+    fi
+    if command -v systemctl >/dev/null 2>&1; then
+        systemctl daemon-reload >/dev/null 2>&1 || true
+    fi
+}
+
+remove_user_unit() {
+    rm -f "$(split_path /etc/systemd/system/netbird-split.service)"
+}
+
+case "${1:-}" in
+    remove)
+        remove_user_unit
+        daemon_reload
+        rmdir "$(split_path /run/netbird-split)" 2>/dev/null || true
+        ;;
+    purge)
+        remove_user_unit
+        rm -f "$(split_path /etc/default/netbird-split)"
+        rm -rf "$(split_path /etc/netbird-split)"
+        rm -rf "$(split_path /var/lib/netbird-split)"
+        rm -rf "$(split_path /var/log/netbird-split)"
+        rm -rf "$(split_path /run/netbird-split)"
+        daemon_reload
+        ;;
+esac
+
+exit 0
