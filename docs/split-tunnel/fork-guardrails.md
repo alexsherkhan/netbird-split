@@ -98,9 +98,12 @@ at least the PR and status-check requirements.
 
 ## License, attribution, and trademark checklist
 
-The repository is BSD-3-Clause except `management/`, `signal/`, `relay/`, and
-`combined/`, which are AGPL-3.0. Keep the root `LICENSE`, the per-directory
-`LICENSE` files, `LICENSES/`, `AUTHORS`, and existing copyright headers intact.
+The root `LICENSE` applies BSD-3-Clause except to directories that carry their
+own license. At this commit `management/LICENSE`, `signal/LICENSE`,
+`relay/LICENSE`, `combined/LICENSE`, and `proxy/LICENSE` contain AGPL-3.0 text,
+while `LICENSES/REUSE.toml` lists only `management/`, `signal/`, and `relay/`.
+Treat the per-directory license files as authoritative, and re-check them at the
+pinned commit before distribution.
 
 - [ ] Preserve `LICENSE`, per-directory licenses, `LICENSES/`, `AUTHORS`, and
       source copyright headers.

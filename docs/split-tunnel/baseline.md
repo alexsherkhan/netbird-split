@@ -36,7 +36,7 @@ cd client
 CGO_ENABLED=0 go build .
 ```
 
-Result: succeeded (exit 0) and produced `client/netbird`. The binary was removed
+Result: succeeded (exit 0) and produced `client/client`. The binary was removed
 after verification so the worktree stays clean.
 
 This builds the client only. It does not build management, signal, relay, proxy,
