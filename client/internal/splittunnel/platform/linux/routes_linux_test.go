@@ -62,6 +62,30 @@ func (r *recordedRouter) router() *netlinkRouter {
 	}
 }
 
+func TestNetlinkRouterApplySkipsUnchangedRoutes(t *testing.T) {
+	allocations := testAllocations(t)
+	recorded := newRecordedRouter()
+	router := recorded.router()
+	block := allocations.byClass[classBlock]
+	existing := unreachableDefaultRoute(block.table, routeFamily4, protectedFallbackMetric)
+	router.routeListFiltered = func(family int, filter *netlink.Route, _ uint64) ([]netlink.Route, error) {
+		if family == netlink.FAMILY_V4 && filter.Table == int(block.table) {
+			return []netlink.Route{*existing}, nil
+		}
+		return nil, nil
+	}
+
+	plan := routePlan{classes: []classRoute{{
+		class:      classBlock,
+		allocation: block,
+		protected:  true,
+		blackhole:  true,
+	}}}
+
+	require.NoError(t, router.Apply(context.Background(), plan))
+	assert.Empty(t, recorded.routes, "unchanged routes must not be replaced and wake the reconciler")
+}
+
 func TestNetlinkRouterApplyInstallsFailClosedRoutesAndRules(t *testing.T) {
 	allocations := testAllocations(t)
 	recorded := newRecordedRouter()
