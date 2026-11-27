@@ -14,6 +14,7 @@ import (
 	"github.com/google/nftables"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
+	"github.com/vishvananda/netlink"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/diagnostics"
 )
@@ -43,6 +44,10 @@ func TestTrafficCountersReadsKernelCounter(t *testing.T) {
 		}
 	}
 	require.NotNil(t, classify, "the owned classification chain must exist")
+
+	lo, err := netlink.LinkByName("lo")
+	require.NoError(t, err)
+	require.NoError(t, netlink.LinkSetUp(lo))
 
 	const mark = uint32(0x1BD0F)
 	rule := nftRule{

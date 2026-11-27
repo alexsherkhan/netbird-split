@@ -54,9 +54,10 @@ classification rules. It excludes link-layer framing and interface overhead, so
 it is not the same value as a network interface counter such as
 /sys/class/net/<iface>/statistics/tx_bytes. VPN, DIRECT, BLOCK and EXIT totals
 are disjoint: a packet matches one classification rule, so the class totals add
-up to the outgoing total. Rule hits count matched packets, not bytes. Incoming
-bytes and active connections are reported as unavailable because the owned
-counters observe egress only.
+up to the outgoing total. Rule hits count matched packets, not bytes. Counters are cumulative since the
+most recent policy apply; a normal reapply resets them. Incoming bytes and
+active connections are reported as unavailable because the owned counters
+observe egress only.
 
 Redaction
 Secrets, credentials, private keys, IP addresses, host names, DNS history, user
@@ -330,7 +331,7 @@ func sanitizeExtras(extras []ExtraFile) ([]bundleEntry, []ExcludedArtifact) {
 		name := artifactName(extra.Name)
 		if name == "" {
 			excluded = append(excluded, ExcludedArtifact{
-				Name:   extra.Name,
+				Name:   RedactText(extra.Name),
 				Reason: "invalid artifact name",
 			})
 			continue
