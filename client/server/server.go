@@ -317,6 +317,9 @@ func (s *Server) SplitTunnelPrivateRoutes() ([]netip.Prefix, bool) {
 	}
 
 	prefixes := engine.OverlayPrefixes()
+	if !engine.NetworkMapReady() {
+		return prefixes, false
+	}
 	routes, ready := engine.ClientRoutePrefixes()
 	if !ready {
 		return prefixes, false

@@ -2669,6 +2669,15 @@ func (e *Engine) TransportHosts() (relayURLs, stunHosts, turnHosts []string) {
 	return relayURLs, stunHosts, turnHosts
 }
 
+// NetworkMapReady reports whether the engine has applied its first management
+// network map. Routes from a manager that exists before the first sync are not
+// a complete private-route set.
+func (e *Engine) NetworkMapReady() bool {
+	e.syncMsgMux.Lock()
+	defer e.syncMsgMux.Unlock()
+	return e.networkSerial > 0
+}
+
 // ClientRoutePrefixes returns every private network route sent by management,
 // including deselected routes, so a split policy can force them through the
 // overlay. The bool reports whether the route manager exists yet.

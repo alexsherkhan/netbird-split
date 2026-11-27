@@ -109,6 +109,9 @@ func BuildWiring(ctx context.Context, inputs RuntimeInputs, resolve HostResolver
 	if !inputs.DNSReady {
 		problems = append(problems, "DNS observation is unavailable")
 	}
+	if len(normalizePrefixes(inputs.DNSResolvers)) == 0 {
+		problems = append(problems, "no DNS resolvers are configured")
+	}
 
 	wiring.Constraints.PrivatePrefixes = normalizePrefixes(inputs.PrivatePrefixes)
 	wiring.TransportConfigured = len(problems) == 0
