@@ -1,0 +1,257 @@
+syntax = "proto3";
+
+import "google/protobuf/timestamp.proto";
+
+option go_package = "/proto";
+
+package daemon;
+
+// SplitTunnelService exposes the split tunnel control plane over the daemon's
+// local IPC socket. Read methods are available to any kernel-identified local
+// caller. Mutations require additional authority and are refused when the
+// caller cannot be identified.
+service SplitTunnelService {
+  // GetStatus returns the current engine status. Diagnostics are redacted for
+  // callers that are not privileged.
+  rpc GetStatus(GetSplitTunnelStatusRequest) returns (GetSplitTunnelStatusResponse) {}
+
+  // GetConfig returns the current configuration and its revision.
+  rpc GetConfig(GetSplitTunnelConfigRequest) returns (GetSplitTunnelConfigResponse) {}
+
+  // SetConfig validates and applies a configuration. The caller must supply the
+  // revision it read; a stale revision is rejected with REVISION_CONFLICT.
+  rpc SetConfig(SetSplitTunnelConfigRequest) returns (SetSplitTunnelConfigResponse) {}
+
+  // RollbackConfig restores a previous configuration as a new revision.
+  rpc RollbackConfig(RollbackSplitTunnelConfigRequest) returns (RollbackSplitTunnelConfigResponse) {}
+
+  // ListApplications returns discovered applications. Executable paths and
+  // source paths are redacted for callers that are not privileged.
+  rpc ListApplications(ListSplitTunnelApplicationsRequest) returns (ListSplitTunnelApplicationsResponse) {}
+
+  // ListRules returns the evaluated rules and structural conflicts.
+  rpc ListRules(ListSplitTunnelRulesRequest) returns (ListSplitTunnelRulesResponse) {}
+
+  // TracePacket evaluates a packet against the current policy. Forwarding
+  // diagnostics are redacted for callers that are not privileged.
+  rpc TracePacket(TraceSplitTunnelPacketRequest) returns (TraceSplitTunnelPacketResponse) {}
+
+  // ListEvents returns retained events after a sequence number.
+  rpc ListEvents(ListSplitTunnelEventsRequest) returns (ListSplitTunnelEventsResponse) {}
+
+  // SubscribeEvents streams retained and live events. A slow subscriber loses
+  // the oldest queued events and is told how many were dropped.
+  rpc SubscribeEvents(SubscribeSplitTunnelEventsRequest) returns (stream SplitTunnelEvent) {}
+}
+
+message GetSplitTunnelStatusRequest {
+  // api_version is the contract version the caller speaks. Zero selects the
+  // server's current version.
+  uint32 api_version = 1;
+}
+
+message GetSplitTunnelStatusResponse {
+  uint32 api_version = 1;
+  uint64 revision = 2;
+  bool enabled = 3;
+  bool running = 4;
+  string mode = 5;
+  string backend = 6;
+  repeated SplitTunnelProcess processes = 7;
+  map<string, string> diagnostics = 8;
+  // redacted_fields names the response fields omitted for this caller.
+  repeated string redacted_fields = 9;
+}
+
+message SplitTunnelProcess {
+  int32 pid = 1;
+  string desktop_id = 2;
+  string name = 3;
+  string executable = 4;
+  uint32 uid = 5;
+  string cgroup = 6;
+}
+
+message GetSplitTunnelConfigRequest {
+  uint32 api_version = 1;
+}
+
+message GetSplitTunnelConfigResponse {
+  uint32 api_version = 1;
+  uint64 revision = 2;
+  SplitTunnelConfig config = 3;
+}
+
+message SetSplitTunnelConfigRequest {
+  uint32 api_version = 1;
+  // expected_revision is the revision the caller read. Zero means no config
+  // exists yet.
+  uint64 expected_revision = 2;
+  SplitTunnelConfig config = 3;
+}
+
+message SetSplitTunnelConfigResponse {
+  uint32 api_version = 1;
+  // revision is the new current revision. It is only returned after the
+  // configuration was accepted.
+  uint64 revision = 2;
+}
+
+message RollbackSplitTunnelConfigRequest {
+  uint32 api_version = 1;
+  // expected_revision is the current revision the caller read.
+  uint64 expected_revision = 2;
+  // revision is the historical configuration to restore.
+  uint64 revision = 3;
+}
+
+message RollbackSplitTunnelConfigResponse {
+  uint32 api_version = 1;
+  // revision is the new current revision, not the restored one.
+  uint64 revision = 2;
+}
+
+message SplitTunnelConfig {
+  uint32 schema_version = 1;
+  SplitTunnelSettings split_tunnel = 2;
+}
+
+message SplitTunnelSettings {
+  bool enabled = 1;
+  string mode = 2;
+  string default_action = 3;
+  string kill_switch = 4;
+  bool ipv6 = 5;
+  SplitTunnelDNSSettings dns = 6;
+  repeated SplitTunnelRule rules = 7;
+}
+
+message SplitTunnelDNSSettings {
+  bool tracking_enabled = 1;
+  bool respect_ttl = 2;
+  string conflict_policy = 3;
+  bool strict_mode = 4;
+}
+
+message SplitTunnelRule {
+  string id = 1;
+  string name = 2;
+  bool enabled = 3;
+  int32 priority = 4;
+  string match_mode = 5;
+  repeated SplitTunnelCondition conditions = 6;
+  string action = 7;
+  string exit_node_id = 8;
+  string description = 9;
+}
+
+// SplitTunnelCondition mirrors the canonical configuration condition: one type,
+// one value for simple conditions, or children for all/any conditions.
+message SplitTunnelCondition {
+  string type = 1;
+  string value = 2;
+  repeated SplitTunnelCondition children = 3;
+}
+
+message ListSplitTunnelApplicationsRequest {
+  uint32 api_version = 1;
+  // query filters by desktop ID or display name as a case-insensitive
+  // substring. Empty returns every application.
+  string query = 2;
+}
+
+message SplitTunnelApplication {
+  string desktop_id = 1;
+  string name = 2;
+  string icon_name = 3;
+  string icon_path = 4;
+  string executable = 5;
+  string install_type = 6;
+  string source_path = 7;
+  bool no_display = 8;
+  bool unknown = 9;
+}
+
+message ListSplitTunnelApplicationsResponse {
+  uint32 api_version = 1;
+  repeated SplitTunnelApplication applications = 2;
+  repeated string redacted_fields = 3;
+}
+
+message ListSplitTunnelRulesRequest {
+  uint32 api_version = 1;
+}
+
+message ListSplitTunnelRulesResponse {
+  uint32 api_version = 1;
+  uint64 revision = 2;
+  repeated SplitTunnelRule rules = 3;
+  repeated string conflicts = 4;
+}
+
+message TraceSplitTunnelPacketRequest {
+  uint32 api_version = 1;
+  string source_ip = 2;
+  string destination_ip = 3;
+  string protocol = 4;
+  uint32 source_port = 5;
+  uint32 destination_port = 6;
+  string direction = 7;
+  // uid restricts the trace to one Linux user. Zero with has_uid false means
+  // no user restriction.
+  uint32 uid = 8;
+  bool has_uid = 9;
+}
+
+message SplitTunnelTraceStage {
+  string name = 1;
+  string message = 2;
+  bool allowed = 3;
+  string forwarding_details = 4;
+}
+
+message TraceSplitTunnelPacketResponse {
+  uint32 api_version = 1;
+  repeated SplitTunnelTraceStage stages = 2;
+  string final_action = 3;
+  bool redacted = 4;
+  repeated string redacted_fields = 5;
+}
+
+message ListSplitTunnelEventsRequest {
+  uint32 api_version = 1;
+  // after_sequence returns events with a strictly greater sequence.
+  uint64 after_sequence = 2;
+  // limit caps the number of events. Zero uses the server default.
+  uint32 limit = 3;
+}
+
+message ListSplitTunnelEventsResponse {
+  uint32 api_version = 1;
+  repeated SplitTunnelEvent events = 2;
+  // next_sequence is the sequence of the last returned event, or after_sequence
+  // when no events matched.
+  uint64 next_sequence = 3;
+}
+
+message SubscribeSplitTunnelEventsRequest {
+  uint32 api_version = 1;
+  // after_sequence replays retained events after this sequence before live
+  // events are streamed.
+  uint64 after_sequence = 2;
+}
+
+message SplitTunnelEvent {
+  uint64 sequence = 1;
+  string type = 2;
+  string severity = 3;
+  string message = 4;
+  google.protobuf.Timestamp timestamp = 5;
+  // details carries diagnostic metadata. It is omitted for callers that are not
+  // privileged and redacted is set instead.
+  map<string, string> details = 6;
+  // dropped_events counts queued events dropped before this one because the
+  // subscriber was too slow.
+  uint64 dropped_events = 7;
+  bool redacted = 8;
+}

@@ -13,7 +13,7 @@ cd "$script_path"
 go install google.golang.org/protobuf/cmd/protoc-gen-go@v1.36.6
 go install google.golang.org/grpc/cmd/protoc-gen-go-grpc@v1.6.1
 go install github.com/grpc-ecosystem/grpc-gateway/v2/protoc-gen-grpc-gateway@v2.26.3
-protoc -I ./ ./daemon.proto \
+protoc -I ./ ./daemon.proto ./split_tunnel.proto \
   --go_out=../ \
   --go-grpc_out=../ \
   --grpc-gateway_out=../ \
