@@ -401,7 +401,7 @@ func TestIPv4PolicyRollbackRemovesOnlyPolicyState(t *testing.T) {
 
 	assert.NotNil(t, findInetTable(t, tableName), "rollback must keep the baseline table")
 	assert.Len(t, chainsInTable(t, tableName), 4, "rollback must keep the baseline chains")
-	assert.Len(t, setsInTable(t, table), 10, "rollback must keep the baseline sets")
+	assert.Len(t, setsInTable(t, table), len(setSpecs()), "rollback must keep the baseline sets")
 
 	conn := &nftables.Conn{}
 	classify := &nftables.Chain{Name: string(chainClassifyOutput), Table: table}
