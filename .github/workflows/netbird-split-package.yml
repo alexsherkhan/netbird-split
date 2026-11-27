@@ -132,6 +132,14 @@ jobs:
           go-version-file: "go.mod"
           cache: false
 
+      - name: Stub Wails frontend bundle
+        # client/ui/main.go embeds all:frontend/dist, which is generated and
+        # gitignored. The privileged package list excludes client/ui, but the
+        # module load still resolves the embed pattern.
+        run: |
+          mkdir -p client/ui/frontend/dist
+          touch client/ui/frontend/dist/.embed-placeholder
+
       - name: Check Docker availability
         id: docker
         run: |
