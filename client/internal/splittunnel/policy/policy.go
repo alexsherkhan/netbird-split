@@ -153,14 +153,10 @@ func (c Constraints) validate() error {
 			return fmt.Errorf("private prefix %d: %w", i, err)
 		}
 	}
-	for i, control := range c.ControlPrefixes {
-		for j, private := range c.PrivatePrefixes {
-			if control.Overlaps(private) {
-				return fmt.Errorf("control prefix %d (%s) overlaps private prefix %d (%s)",
-					i, control, j, private)
-			}
-		}
-	}
+	// Control and private prefixes may overlap at runtime: a management or
+	// transport endpoint can live inside a private route. Compilation emits
+	// control rules first, so control precedence resolves the overlap while the
+	// rest of the private route still uses the overlay.
 	return nil
 }
 
@@ -317,6 +313,40 @@ func conditionsUseApplications(conditions []config.Condition) bool {
 			return true
 		case config.ConditionAll, config.ConditionAny:
 			if conditionsUseApplications(conditions[i].Children) {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// UsesDomains reports whether any enabled rule selects traffic by a domain.
+// The DNS tracker only needs to observe answers for policies that use these
+// conditions.
+func (p *CompiledPolicy) UsesDomains() bool {
+	if p == nil || !p.Enabled {
+		return false
+	}
+	for i := range p.BlockRules {
+		if conditionsUseDomains(p.BlockRules[i].Conditions) {
+			return true
+		}
+	}
+	for i := range p.Rules {
+		if conditionsUseDomains(p.Rules[i].Conditions) {
+			return true
+		}
+	}
+	return false
+}
+
+func conditionsUseDomains(conditions []config.Condition) bool {
+	for i := range conditions {
+		switch conditions[i].Type {
+		case config.ConditionDomain, config.ConditionWildcardDomain:
+			return true
+		case config.ConditionAll, config.ConditionAny:
+			if conditionsUseDomains(conditions[i].Children) {
 				return true
 			}
 		}

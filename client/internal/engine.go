@@ -278,6 +278,10 @@ type Engine struct {
 	dnsForwardMgr *dnsfwd.Manager
 
 	dnsServer dns.Server
+	// dnsServerMu guards the pointer for out-of-band readers such as the split
+	// tunnel controller. Engine internals still use the field directly during
+	// their own lifecycle.
+	dnsServerMu sync.RWMutex
 
 	// checks are the client-applied posture checks that need to be evaluated on the client.
 	// Writers hold syncMsgMux and checksMu; readers hold either, see appliedChecks.
@@ -635,7 +639,9 @@ func (e *Engine) Start(netbirdConfig *mgmProto.NetbirdConfig, mgmtURL *url.URL) 
 	if err != nil {
 		return fmt.Errorf("create dns server: %w", err)
 	}
+	e.dnsServerMu.Lock()
 	e.dnsServer = dnsServer
+	e.dnsServerMu.Unlock()
 
 	// Populate DNS cache with NetbirdConfig and management URL for early resolution
 	if err := e.PopulateNetbirdConfig(netbirdConfig, mgmtURL); err != nil {
@@ -2539,11 +2545,14 @@ func (e *Engine) startNetworkMonitor() {
 }
 
 func (e *Engine) stopDNSServer() {
-	if e.dnsServer == nil {
+	e.dnsServerMu.Lock()
+	server := e.dnsServer
+	e.dnsServer = nil
+	e.dnsServerMu.Unlock()
+	if server == nil {
 		return
 	}
-	e.dnsServer.Stop()
-	e.dnsServer = nil
+	server.Stop()
 	err := fmt.Errorf("DNS server stopped")
 	nsGroupStates := e.statusRecorder.GetDNSStates()
 	for i := range nsGroupStates {
@@ -2605,6 +2614,87 @@ func (e *Engine) GetWgV6Addr() netip.Addr {
 		return netip.Addr{}
 	}
 	return e.wgInterface.Address().IPv6
+}
+
+// DNSServer returns the engine's current DNS server. It returns nil before
+// Start creates one and after Stop clears it, so callers that attach an
+// observer must re-check after an engine restart.
+func (e *Engine) DNSServer() dns.Server {
+	e.dnsServerMu.RLock()
+	defer e.dnsServerMu.RUnlock()
+	return e.dnsServer
+}
+
+// OverlayPrefixes returns the IPv4 and IPv6 overlay network prefixes. The
+// split tunnel forces them through the overlay so peer traffic is never
+// classified as direct.
+func (e *Engine) OverlayPrefixes() []netip.Prefix {
+	e.syncMsgMux.Lock()
+	defer e.syncMsgMux.Unlock()
+
+	if e.wgInterface == nil {
+		return nil
+	}
+	address := e.wgInterface.Address()
+	var prefixes []netip.Prefix
+	if address.Network.IsValid() {
+		prefixes = append(prefixes, address.Network)
+	}
+	if address.IPv6Net.IsValid() {
+		prefixes = append(prefixes, address.IPv6Net)
+	}
+	return prefixes
+}
+
+// TransportHosts returns the relay server URLs and STUN/TURN host names the
+// client is configured to use. It returns hosts rather than full URIs so a
+// TURN credential never leaves this package.
+func (e *Engine) TransportHosts() (relayURLs, stunHosts, turnHosts []string) {
+	if e.relayManager != nil {
+		relayURLs = append(relayURLs, e.relayManager.ServerURLs()...)
+	}
+
+	e.syncMsgMux.Lock()
+	defer e.syncMsgMux.Unlock()
+	for _, uri := range e.STUNs {
+		if uri != nil && uri.Host != "" {
+			stunHosts = append(stunHosts, uri.Host)
+		}
+	}
+	for _, uri := range e.TURNs {
+		if uri != nil && uri.Host != "" {
+			turnHosts = append(turnHosts, uri.Host)
+		}
+	}
+	return relayURLs, stunHosts, turnHosts
+}
+
+// ClientRoutePrefixes returns every private network route sent by management,
+// including deselected routes, so a split policy can force them through the
+// overlay. The bool reports whether the route manager exists yet.
+func (e *Engine) ClientRoutePrefixes() ([]netip.Prefix, bool) {
+	e.syncMsgMux.Lock()
+	manager := e.routeManager
+	e.syncMsgMux.Unlock()
+	if manager == nil {
+		return nil, false
+	}
+
+	routes := manager.GetClientRoutes()
+	prefixes := make([]netip.Prefix, 0, len(routes))
+	for _, routeList := range routes {
+		for _, item := range routeList {
+			if item == nil || !item.Network.IsValid() {
+				continue
+			}
+			prefix := item.Network.Masked()
+			if prefix.Bits() == 0 {
+				continue
+			}
+			prefixes = append(prefixes, prefix)
+		}
+	}
+	return prefixes, true
 }
 
 func (e *Engine) RenewTun(fd int) error {

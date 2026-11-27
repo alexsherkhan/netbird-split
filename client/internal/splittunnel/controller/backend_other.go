@@ -27,7 +27,7 @@ func backendName() string {
 }
 
 func (platformBackend) Initialize(context.Context) error {
-	return errUnsupportedPlatform
+	return nil
 }
 
 func (platformBackend) Recover(context.Context) (RecoveryReport, error) {
@@ -35,6 +35,14 @@ func (platformBackend) Recover(context.Context) (RecoveryReport, error) {
 }
 
 func (platformBackend) ApplyPolicy(context.Context, *policy.CompiledPolicy, backend.PolicyOptions) error {
+	return errUnsupportedPlatform
+}
+
+func (platformBackend) InstallProtection(context.Context, *policy.CompiledPolicy, backend.PolicyOptions) error {
+	return errUnsupportedPlatform
+}
+
+func (platformBackend) UpdateDomainSets(context.Context, []backend.DomainSetUpdate) error {
 	return errUnsupportedPlatform
 }
 
@@ -47,7 +55,7 @@ func (platformBackend) GetStatus(context.Context) (backend.Status, error) {
 }
 
 func (platformBackend) EmergencyReset(context.Context) error {
-	return errUnsupportedPlatform
+	return nil
 }
 
 func (platformBackend) Close(context.Context) error {

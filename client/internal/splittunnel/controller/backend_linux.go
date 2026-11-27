@@ -35,11 +35,15 @@ func (b *platformBackend) Recover(ctx context.Context) (RecoveryReport, error) {
 	if err != nil && !errors.Is(err, linux.ErrRecoveryIntentRequired) {
 		return RecoveryReport{}, err
 	}
+	status := b.backend.RecoveryStatus()
 	return RecoveryReport{
-		Action:       string(report.Action),
-		JournalState: string(report.JournalState),
-		Revision:     report.Revision,
-		Issues:       append([]string(nil), report.Issues...),
+		Action:              string(report.Action),
+		JournalState:        string(report.JournalState),
+		Revision:            report.Revision,
+		Issues:              append([]string(nil), report.Issues...),
+		ProtectionPreserved: status.ProtectionPreserved,
+		RollbackFailed:      status.RollbackFailed,
+		LastError:           status.LastError,
 	}, nil
 }
 
@@ -49,6 +53,21 @@ func (b *platformBackend) ApplyPolicy(
 	options backend.PolicyOptions,
 ) error {
 	return b.backend.ApplyPolicy(ctx, compiled, options)
+}
+
+func (b *platformBackend) InstallProtection(
+	ctx context.Context,
+	compiled *policy.CompiledPolicy,
+	options backend.PolicyOptions,
+) error {
+	return b.backend.InstallProtection(ctx, compiled, options)
+}
+
+func (b *platformBackend) UpdateDomainSets(
+	ctx context.Context,
+	updates []backend.DomainSetUpdate,
+) error {
+	return b.backend.UpdateDomainSets(ctx, updates)
 }
 
 func (b *platformBackend) Rollback(ctx context.Context) error {

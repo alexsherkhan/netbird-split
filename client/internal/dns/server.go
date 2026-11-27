@@ -149,6 +149,7 @@ type DefaultServer struct {
 	previousConfigHash uint64
 	currentConfig      HostDNSConfig
 	currentConfigHash  uint64
+	resolvers          []netip.Prefix
 	handlerChain       *HandlerChain
 	extraDomains       map[domain.Domain]int
 	batchMode          bool
@@ -506,6 +507,37 @@ func (s *DefaultServer) SetResponseObserver(observer ResponseObserver) {
 	s.handlerChain.SetResponseObserver(observer)
 }
 
+// ResolverPrefixes returns the configured upstream resolver addresses,
+// including the OS-side resolvers used as the fallback path. The split tunnel
+// kill switch keeps them reachable while protection is active. An empty list
+// means no resolver was configured, not that observation failed.
+func (s *DefaultServer) ResolverPrefixes() []netip.Prefix {
+	s.mux.Lock()
+	defer s.mux.Unlock()
+
+	prefixes := append([]netip.Prefix(nil), s.resolvers...)
+	if s.hostManager == nil {
+		return prefixes
+	}
+	seen := make(map[netip.Prefix]struct{}, len(prefixes))
+	for _, prefix := range prefixes {
+		seen[prefix] = struct{}{}
+	}
+	for _, addr := range s.hostManager.getOriginalNameservers() {
+		addr = addr.Unmap()
+		if !addr.IsValid() {
+			continue
+		}
+		prefix := netip.PrefixFrom(addr, addr.BitLen())
+		if _, ok := seen[prefix]; ok {
+			continue
+		}
+		seen[prefix] = struct{}{}
+		prefixes = append(prefixes, prefix)
+	}
+	return prefixes
+}
+
 // Stop stops the server
 func (s *DefaultServer) Stop() {
 	s.ctxCancel()
@@ -680,6 +712,7 @@ func (s *DefaultServer) applyConfiguration(update nbdns.Config) error {
 	s.localResolver.Update(localZones)
 
 	s.currentConfig = dnsConfigToHostDNSConfig(update, s.service.RuntimeIP(), s.service.RuntimePort())
+	s.resolvers = resolverPrefixes(update.NameServerGroups)
 
 	if s.service.RuntimePort() != DefaultPort && !s.hostManager.supportCustomPort() {
 		log.Warnf("the DNS manager of this peer doesn't support custom port. Disabling primary DNS setup. " +
