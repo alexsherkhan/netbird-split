@@ -1,0 +1,4 @@
+[Desktop Entry]
+Type=Application
+Name=Quoted Editor
+Exec="/opt/Example Editor/bin/editor" --open "%f"

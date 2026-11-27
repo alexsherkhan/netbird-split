@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Snap App
+Exec=snap run example
+Icon=com.example.Snap

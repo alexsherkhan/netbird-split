@@ -1,0 +1,6 @@
+[Desktop Entry]
+Type=Application
+Name=Hidden Service Helper
+Exec=/usr/bin/helper --daemon
+NoDisplay=true
+Icon=org.example.Helper

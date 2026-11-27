@@ -1,0 +1,5 @@
+[Desktop Entry]
+Type=Application
+Name=Flatpak App
+Exec=/usr/bin/flatpak run --branch=stable com.example.Flatpak
+Icon=com.example.Flatpak
