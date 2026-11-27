@@ -326,8 +326,6 @@ func TestCompilePolicyIPv6UnsupportedConditions(t *testing.T) {
 	}{
 		{name: "domain", condition: config.Condition{Type: config.ConditionDomain, Domain: "example.com"}},
 		{name: "wildcard domain", condition: config.Condition{Type: config.ConditionWildcardDomain, Wildcard: "example.com"}},
-		{name: "uid", condition: config.Condition{Type: config.ConditionUID, UID: new(config.UID)}},
-		{name: "application", condition: config.Condition{Type: config.ConditionExecutable, Executable: "/usr/bin/firefox"}},
 	}
 
 	for _, tt := range tests {

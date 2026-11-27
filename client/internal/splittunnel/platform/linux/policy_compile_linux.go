@@ -54,6 +54,16 @@ func compilePolicyFor(
 	allocations allocations,
 	enableIPv6 bool,
 ) (*policyPlan, error) {
+	return compilePolicyForWithResolver(compiled, options, allocations, enableIPv6, newStatCgroupResolver())
+}
+
+func compilePolicyForWithResolver(
+	compiled *policy.CompiledPolicy,
+	options backend.PolicyOptions,
+	allocations allocations,
+	enableIPv6 bool,
+	resolver cgroupIDResolver,
+) (*policyPlan, error) {
 	if compiled == nil {
 		return nil, fmt.Errorf("%w: compiled policy is nil", backend.ErrInvalidPolicyOption)
 	}
@@ -66,6 +76,11 @@ func compilePolicyFor(
 	}
 	if compiled.DNS.TrackingEnabled {
 		return nil, fmt.Errorf("DNS tracking: %w", backend.ErrNotImplemented)
+	}
+
+	applications, err := normalizeApplicationScopes(options.Applications)
+	if err != nil {
+		return nil, err
 	}
 
 	sets := make(map[setName][]netip.Prefix, len(policySetNames()))
@@ -118,7 +133,7 @@ func compilePolicyFor(
 
 	for _, blockRule := range compiled.BlockRules {
 		compiledRules, prefixes4, prefixes6, err := compileCompiledRule(
-			blockRule, classBlock, allocations, enableIPv6)
+			blockRule, classBlock, allocations, enableIPv6, applications, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("compile block rule %q: %w", blockRule.ID, err)
 		}
@@ -137,7 +152,7 @@ func compilePolicyFor(
 			return nil, fmt.Errorf("rule %q: unsupported action %q", userRule.ID, userRule.Action)
 		}
 		compiledRules, prefixes4, prefixes6, err := compileCompiledRule(
-			userRule, class, allocations, enableIPv6)
+			userRule, class, allocations, enableIPv6, applications, resolver)
 		if err != nil {
 			return nil, fmt.Errorf("compile rule %q: %w", userRule.ID, err)
 		}
@@ -240,6 +255,8 @@ func compileCompiledRule(
 	class routeClass,
 	allocations allocations,
 	enableIPv6 bool,
+	applications []backend.ApplicationScope,
+	resolver cgroupIDResolver,
 ) ([]nftRule, []netip.Prefix, []netip.Prefix, error) {
 	allocation, ok := allocations.get(class)
 	if !ok {
@@ -255,22 +272,53 @@ func compileCompiledRule(
 	var prefixes4 []netip.Prefix
 	var prefixes6 []netip.Prefix
 	for _, conjunction := range conjunctions {
-		prefixes, hasProtocol, err := classifyConjunction(conjunction)
+		plan, err := parseConjunction(conjunction)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		families, err := conjunctionFamilies(prefixes, hasProtocol, enableIPv6)
+		if plan.unsatisfiable {
+			continue
+		}
+		families, err := conjunctionFamilies(
+			plan.prefixes, plan.hasProtocol(), plan.hasIdentity(), enableIPv6)
 		if err != nil {
 			return nil, nil, nil, err
 		}
-		for _, family := range families {
-			familyPrefixes := prefixesOfFamily(prefixes, family)
-			matches, err := conjunctionMatches(
-				class, family, familyPrefixes, conjunction, hasProtocol)
+		if len(families) == 0 {
+			continue
+		}
+
+		if plan.hasApplications() {
+			compiled, err := compileApplicationRules(
+				plan, applications, families, allocation.mark.Value, resolver)
 			if err != nil {
 				return nil, nil, nil, err
 			}
-			if !hasProtocol {
+			rules = append(rules, compiled...)
+			continue
+		}
+		if plan.uid != nil {
+			uid := *plan.uid
+			for _, family := range families {
+				familyPrefixes := prefixesOfFamily(plan.prefixes, family)
+				rules = append(rules, nftRule{
+					family:  family,
+					matches: literalMatches(familyPrefixes, plan.protocols),
+					uid:     &uid,
+					mark:    allocation.mark.Value,
+				})
+			}
+			continue
+		}
+
+		for _, family := range families {
+			familyPrefixes := prefixesOfFamily(plan.prefixes, family)
+			useSet := !plan.hasProtocol() && len(familyPrefixes) > 0
+			matches, err := conjunctionMatches(class, family, familyPrefixes, plan, useSet)
+			if err != nil {
+				return nil, nil, nil, err
+			}
+			if !plan.hasProtocol() {
 				if family == family6 {
 					prefixes6 = append(prefixes6, familyPrefixes...)
 				} else {
@@ -287,6 +335,64 @@ func compileCompiledRule(
 	return rules, prefixes4, prefixes6, nil
 }
 
+func compileApplicationRules(
+	plan conjunctionPlan,
+	applications []backend.ApplicationScope,
+	families []nftFamily,
+	mark uint32,
+	resolver cgroupIDResolver,
+) ([]nftRule, error) {
+	var rules []nftRule
+	for _, scope := range applications {
+		if !scopeMatchesConjunction(scope, plan) {
+			continue
+		}
+		cgroup, err := resolveCgroupMatch(scope.CgroupPath, resolver)
+		if err != nil {
+			return nil, fmt.Errorf("resolve application cgroup %q: %w", scope.CgroupPath, err)
+		}
+		for _, family := range families {
+			familyPrefixes := prefixesOfFamily(plan.prefixes, family)
+			rules = append(rules, nftRule{
+				family:  family,
+				matches: literalMatches(familyPrefixes, plan.protocols),
+				cgroup:  &cgroup,
+				mark:    mark,
+			})
+		}
+	}
+	return rules, nil
+}
+
+func scopeMatchesConjunction(scope backend.ApplicationScope, plan conjunctionPlan) bool {
+	if plan.uid != nil && uint32(scope.UID) != *plan.uid {
+		return false
+	}
+	for _, condition := range plan.applications {
+		switch condition.Type {
+		case config.ConditionDesktopID:
+			if condition.DesktopID != scope.Identity.DesktopID {
+				return false
+			}
+		case config.ConditionExecutable:
+			if condition.Executable != scope.Identity.Executable {
+				return false
+			}
+		case config.ConditionFlatpakID:
+			if condition.FlatpakID != scope.Identity.FlatpakID {
+				return false
+			}
+		case config.ConditionSnapID:
+			if condition.SnapID != scope.Identity.SnapID {
+				return false
+			}
+		default:
+			return false
+		}
+	}
+	return true
+}
+
 // conjunctionFamilies selects the address families a conjunction can match. A
 // conjunction mixing IPv4 and IPv6 CIDRs is unsatisfiable, because one packet
 // has a single family, so it is rejected instead of silently widening a rule.
@@ -295,6 +401,7 @@ func compileCompiledRule(
 func conjunctionFamilies(
 	prefixes []netip.Prefix,
 	hasProtocol bool,
+	hasIdentity bool,
 	enableIPv6 bool,
 ) ([]nftFamily, error) {
 	var has4, has6 bool
@@ -320,12 +427,13 @@ func conjunctionFamilies(
 		return []nftFamily{family6}, nil
 	case has4:
 		return []nftFamily{family4}, nil
-	case !hasProtocol:
-		return []nftFamily{}, nil
-	case enableIPv6:
-		return []nftFamily{family4, family6}, nil
-	default:
+	case hasProtocol || hasIdentity:
+		if enableIPv6 {
+			return []nftFamily{family4, family6}, nil
+		}
 		return []nftFamily{family4}, nil
+	default:
+		return []nftFamily{}, nil
 	}
 }
 
@@ -333,31 +441,31 @@ func conjunctionMatches(
 	class routeClass,
 	family nftFamily,
 	prefixes []netip.Prefix,
-	conjunction []config.Condition,
-	hasProtocol bool,
+	plan conjunctionPlan,
+	useSet bool,
 ) ([]nftMatch, error) {
-	if !hasProtocol && len(prefixes) > 0 {
+	if useSet {
 		set := setForClassFamily(class, family)
 		if set == "" {
 			return nil, fmt.Errorf("no prefix set for class %q family %v", class, family)
 		}
 		return []nftMatch{{set: set}}, nil
 	}
+	return literalMatches(prefixes, plan.protocols), nil
+}
 
-	matches := make([]nftMatch, 0, len(prefixes)+1)
+func literalMatches(prefixes []netip.Prefix, protocols []config.Condition) []nftMatch {
+	matches := make([]nftMatch, 0, len(prefixes)+len(protocols))
 	for _, prefix := range prefixes {
 		matches = append(matches, nftMatch{prefix: prefix})
 	}
-	for _, condition := range conjunction {
-		if condition.Type != config.ConditionProtocolPort {
-			continue
-		}
+	for _, condition := range protocols {
 		matches = append(matches, nftMatch{
 			protocol: condition.Protocol,
 			port:     condition.Port,
 		})
 	}
-	return matches, nil
+	return matches
 }
 
 func prefixesOfFamily(prefixes []netip.Prefix, family nftFamily) []netip.Prefix {
@@ -370,29 +478,88 @@ func prefixesOfFamily(prefixes []netip.Prefix, family nftFamily) []netip.Prefix 
 	return out
 }
 
-func classifyConjunction(conjunction []config.Condition) ([]netip.Prefix, bool, error) {
-	var prefixes []netip.Prefix
-	hasProtocol := false
-	for _, condition := range conjunction {
+type conjunctionPlan struct {
+	prefixes      []netip.Prefix
+	protocols     []config.Condition
+	applications  []config.Condition
+	uid           *uint32
+	unsatisfiable bool
+}
+
+func (p conjunctionPlan) hasProtocol() bool {
+	return len(p.protocols) > 0
+}
+
+func (p conjunctionPlan) hasApplications() bool {
+	return len(p.applications) > 0
+}
+
+func (p conjunctionPlan) hasIdentity() bool {
+	return p.hasApplications() || p.uid != nil
+}
+
+func parseConjunction(conjunction []config.Condition) (conjunctionPlan, error) {
+	var plan conjunctionPlan
+	for i := range conjunction {
+		condition := conjunction[i]
 		switch condition.Type {
 		case config.ConditionCIDR:
 			if err := validateCIDRPrefix(condition.Prefix); err != nil {
-				return nil, false, err
+				return conjunctionPlan{}, err
 			}
-			prefixes = append(prefixes, condition.Prefix)
+			plan.prefixes = append(plan.prefixes, condition.Prefix)
 		case config.ConditionProtocolPort:
 			if err := validateProtocolPort(condition.Protocol, condition.Port); err != nil {
-				return nil, false, err
+				return conjunctionPlan{}, err
 			}
-			hasProtocol = true
+			plan.protocols = append(plan.protocols, condition)
+		case config.ConditionDesktopID, config.ConditionExecutable,
+			config.ConditionFlatpakID, config.ConditionSnapID:
+			plan.applications = append(plan.applications, condition)
+		case config.ConditionUID:
+			if condition.UID == nil {
+				return conjunctionPlan{}, fmt.Errorf("uid condition has no user ID: %w",
+					backend.ErrUnsupportedCondition)
+			}
+			uid := uint32(*condition.UID)
+			if plan.uid != nil && *plan.uid != uid {
+				plan.unsatisfiable = true
+				continue
+			}
+			plan.uid = &uid
 		default:
-			return nil, false, &backend.UnsupportedConditionError{
+			return conjunctionPlan{}, &backend.UnsupportedConditionError{
 				Condition: condition.Type,
 				Reason:    "condition is not implemented for split tunnel policy enforcement",
 			}
 		}
 	}
-	return prefixes, hasProtocol, nil
+	return plan, nil
+}
+
+func normalizeApplicationScopes(scopes []backend.ApplicationScope) ([]backend.ApplicationScope, error) {
+	if len(scopes) == 0 {
+		return nil, nil
+	}
+	seen := make(map[string]struct{}, len(scopes))
+	out := make([]backend.ApplicationScope, 0, len(scopes))
+	for i, scope := range scopes {
+		if err := scope.Validate(); err != nil {
+			return nil, fmt.Errorf("application scope %d: %w", i, err)
+		}
+		if _, ok := seen[scope.CgroupPath]; ok {
+			continue
+		}
+		seen[scope.CgroupPath] = struct{}{}
+		out = append(out, scope)
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].CgroupPath != out[j].CgroupPath {
+			return out[i].CgroupPath < out[j].CgroupPath
+		}
+		return out[i].UID < out[j].UID
+	})
+	return out, nil
 }
 
 func ruleConjunctions(rule policy.CompiledRule) ([][]config.Condition, error) {
@@ -455,6 +622,18 @@ func conditionConjunctions(condition *config.Condition, count int) ([][]config.C
 		}
 		return [][]config.Condition{{
 			{Type: condition.Type, Protocol: condition.Protocol, Port: condition.Port},
+		}}, nil
+	case config.ConditionDesktopID, config.ConditionExecutable,
+		config.ConditionFlatpakID, config.ConditionSnapID:
+		return [][]config.Condition{{*condition}}, nil
+	case config.ConditionUID:
+		if condition.UID == nil {
+			return nil, fmt.Errorf("uid condition has no user ID: %w",
+				backend.ErrUnsupportedCondition)
+		}
+		uid := *condition.UID
+		return [][]config.Condition{{
+			{Type: condition.Type, UID: &uid},
 		}}, nil
 	default:
 		return nil, &backend.UnsupportedConditionError{

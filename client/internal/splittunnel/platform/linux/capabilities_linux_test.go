@@ -76,6 +76,8 @@ func TestSystemProberReturnsEveryCapability(t *testing.T) {
 		backend.CapabilityPolicyRouting,
 		backend.CapabilityRouteOutputHook,
 		backend.CapabilityCgroupV2,
+		backend.CapabilitySocketCgroupV2,
+		backend.CapabilityEBPF,
 		backend.CapabilityIPv6,
 	} {
 		item, ok := capabilities.Get(id)
