@@ -322,13 +322,14 @@ func TestCompilePolicyIPv6DisabledSkipsV6(t *testing.T) {
 	assert.Equal(t, family4, last.family, "the IPv4 default rule must still be installed")
 }
 
-func TestCompilePolicyRejectsKillSwitch(t *testing.T) {
+func TestCompilePolicyAcceptsKillSwitch(t *testing.T) {
 	cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
 	cfg.SplitTunnel.KillSwitch = config.KillSwitchSelective
 	compiled := mustCompile(t, cfg)
 
-	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
-	require.ErrorIs(t, err, backend.ErrNotImplemented)
+	plan, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.NoError(t, err)
+	assert.NotEmpty(t, plan.nft.killswitch)
 }
 
 func TestCompilePolicyAcceptsDNSTracking(t *testing.T) {

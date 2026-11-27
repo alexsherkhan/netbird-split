@@ -275,6 +275,10 @@ type PolicyOptions struct {
 	Direct6      RouteTarget6
 	ExitNode     *ExitNode
 	Applications []ApplicationScope
+	// DNSResolvers are the configured resolver prefixes that a kill switch
+	// keeps reachable while it enforces its mode. An empty list leaves only
+	// the protected path and control/transport prefixes reachable.
+	DNSResolvers []netip.Prefix
 }
 
 // State is the lifecycle state of a network backend.

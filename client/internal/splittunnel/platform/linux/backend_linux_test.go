@@ -14,6 +14,7 @@ import (
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/policy"
 )
 
 type fakeProber struct {
@@ -38,8 +39,12 @@ type fakeManager struct {
 	applyCalls      int
 	clearCalls      int
 	domainCalls     int
+	killSwitchCalls int
 	appliedPolicies []nftPolicy
 	domainUpdates   [][]backend.DomainSetUpdate
+	killSwitchRules [][]nftKillRule
+	killSwitchSets  []map[setName][]netip.Prefix
+	killSwitchErr   error
 	domainErr       error
 	owned           backend.OwnedObjects
 }
@@ -66,6 +71,21 @@ func (f *fakeManager) ApplyPolicy(_ context.Context, policy nftPolicy) error {
 	f.applyCalls++
 	f.appliedPolicies = append(f.appliedPolicies, policy)
 	return f.applyPolicyErr
+}
+
+func (f *fakeManager) ApplyKillSwitch(
+	_ context.Context,
+	controlSets map[setName][]netip.Prefix,
+	rules []nftKillRule,
+) error {
+	f.killSwitchCalls++
+	clonedSets := make(map[setName][]netip.Prefix, len(controlSets))
+	for name, prefixes := range controlSets {
+		clonedSets[name] = append([]netip.Prefix(nil), prefixes...)
+	}
+	f.killSwitchSets = append(f.killSwitchSets, clonedSets)
+	f.killSwitchRules = append(f.killSwitchRules, append([]nftKillRule(nil), rules...))
+	return f.killSwitchErr
 }
 
 func (f *fakeManager) ApplyDomainSets(_ context.Context, updates []backend.DomainSetUpdate) error {
@@ -633,4 +653,129 @@ func TestApplyPolicyReplacesApplicationCgroupRules(t *testing.T) {
 	}
 	assert.Equal(t, map[uint64]bool{0x52: true}, ids,
 		"a live policy update must replace the previous application cgroup match")
+}
+
+func killSwitchCompiled(t *testing.T, mode config.KillSwitchMode) *policy.CompiledPolicy {
+	t.Helper()
+
+	cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
+	cfg.SplitTunnel.KillSwitch = mode
+	compiled, err := policy.CompileWith(cfg, policy.Constraints{
+		ControlPrefixes: []netip.Prefix{netip.MustParsePrefix("10.8.0.0/16")},
+	})
+	require.NoError(t, err)
+	return compiled
+}
+
+func TestApplyPolicyInstallsKillSwitch(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{createdTable: true}
+	b, _ := newTestBackend(probe, manager)
+	require.NoError(t, b.Initialize(context.Background()))
+
+	require.NoError(t, b.ApplyPolicy(context.Background(),
+		killSwitchCompiled(t, config.KillSwitchGlobal), testOptions()))
+	require.Len(t, manager.appliedPolicies, 1)
+	assert.NotEmpty(t, manager.appliedPolicies[0].killswitch,
+		"a full apply must install the kill switch in the same transaction")
+	assert.NotEmpty(t, manager.appliedPolicies[0].sets[setKillSwitchControl4])
+
+	require.NoError(t, b.ApplyPolicy(context.Background(),
+		killSwitchCompiled(t, config.KillSwitchDisabled), testOptions()))
+	require.Len(t, manager.appliedPolicies, 2)
+	assert.Empty(t, manager.appliedPolicies[1].killswitch,
+		"disabling the kill switch must clear the rules")
+}
+
+func TestInstallProtectionIsIdempotent(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{createdTable: true}
+	b, _ := newTestBackend(probe, manager)
+	require.NoError(t, b.Initialize(context.Background()))
+
+	compiled := killSwitchCompiled(t, config.KillSwitchGlobal)
+	require.NoError(t, b.InstallProtection(context.Background(), compiled, testOptions()))
+	require.NoError(t, b.InstallProtection(context.Background(), compiled, testOptions()))
+
+	require.Equal(t, 2, manager.killSwitchCalls)
+	for _, rules := range manager.killSwitchRules {
+		assert.NotEmpty(t, rules)
+	}
+	assert.Equal(t, []netip.Prefix{netip.MustParsePrefix("10.8.0.0/16")},
+		manager.killSwitchSets[0][setKillSwitchControl4])
+	assert.Zero(t, manager.applyCalls,
+		"pre-arming protection must not apply routes or classification")
+
+	require.NoError(t, b.InstallProtection(context.Background(),
+		killSwitchCompiled(t, config.KillSwitchDisabled), testOptions()))
+	require.Equal(t, 3, manager.killSwitchCalls)
+	assert.Empty(t, manager.killSwitchRules[2], "a disabled mode must clear the chain")
+}
+
+func TestInstallProtectionRequiresInitialization(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	b, _ := newTestBackend(probe, &fakeManager{})
+	compiled := killSwitchCompiled(t, config.KillSwitchGlobal)
+
+	require.ErrorIs(t, b.InstallProtection(context.Background(), compiled, testOptions()),
+		backend.ErrNotInitialized)
+}
+
+func TestInstallProtectionRejectsNilPolicy(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	b, _ := newTestBackend(probe, &fakeManager{createdTable: true})
+	require.NoError(t, b.Initialize(context.Background()))
+
+	require.ErrorIs(t, b.InstallProtection(context.Background(), nil, testOptions()),
+		backend.ErrInvalidPolicyOption)
+}
+
+func TestInstallProtectionPropagatesManagerError(t *testing.T) {
+	applyErr := errors.New("kill switch apply failed")
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{createdTable: true, killSwitchErr: applyErr}
+	b, _ := newTestBackend(probe, manager)
+	require.NoError(t, b.Initialize(context.Background()))
+
+	err := b.InstallProtection(context.Background(),
+		killSwitchCompiled(t, config.KillSwitchStrict), testOptions())
+	require.ErrorIs(t, err, applyErr)
+
+	status, statusErr := b.GetStatus(context.Background())
+	require.NoError(t, statusErr)
+	assert.Contains(t, status.LastError, "kill switch apply failed")
+}
+
+func TestEmergencyResetClearsPolicyAndStopsReapply(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{createdTable: true}
+	b, _, router := newTestBackendWithRouter(probe, manager, &fakeRouter{})
+	require.NoError(t, b.Initialize(context.Background()))
+	require.NoError(t, b.ApplyPolicy(context.Background(),
+		killSwitchCompiled(t, config.KillSwitchGlobal), testOptions()))
+	require.Equal(t, 1, manager.applyCalls)
+	clearBefore := manager.clearCalls
+	removeBefore := router.removeCalls
+
+	require.NoError(t, b.EmergencyReset(context.Background()))
+	assert.Equal(t, clearBefore+1, manager.clearCalls,
+		"emergency reset must clear kill switch and policy rules")
+	assert.Equal(t, removeBefore+1, router.removeCalls,
+		"emergency reset must remove protected routes")
+	assert.False(t, b.policyApplied)
+
+	require.NoError(t, b.Reapply(context.Background()))
+	assert.Equal(t, 1, manager.applyCalls, "emergency reset must not re-arm protection")
+
+	require.NoError(t, b.EmergencyReset(context.Background()))
+	assert.Equal(t, clearBefore+2, manager.clearCalls, "emergency reset must stay idempotent")
+}
+
+func TestEmergencyResetWithoutInitializeIsNoop(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	manager := &fakeManager{}
+	b, _ := newTestBackend(probe, manager)
+
+	require.NoError(t, b.EmergencyReset(context.Background()))
+	assert.Zero(t, manager.clearCalls)
 }

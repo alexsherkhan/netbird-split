@@ -41,7 +41,7 @@ func TestNFTablesCatalogIsCompleteAndUnique(t *testing.T) {
 	}
 
 	sets := setSpecs()
-	require.Len(t, sets, 14)
+	require.Len(t, sets, 16)
 	setNames := make(map[setName]struct{}, len(sets))
 	for _, spec := range sets {
 		assert.NotEmpty(t, spec.name)
@@ -54,6 +54,7 @@ func TestNFTablesCatalogIsCompleteAndUnique(t *testing.T) {
 		setDirect4, setDirect6,
 		setBlocked4, setBlocked6,
 		setExit4, setExit6,
+		setKillSwitchControl4, setKillSwitchControl6,
 		setDomains4, setDomains6,
 		setDomainDirect4, setDomainDirect6,
 		setDomainBlock4, setDomainBlock6,
@@ -121,7 +122,7 @@ func TestNFTablesOwnedObjects(t *testing.T) {
 	owned := manager.Owned()
 	assert.Equal(t, defaultTableName, owned.Table)
 	assert.Len(t, owned.Chains, 4)
-	assert.Len(t, owned.Sets, 14)
+	assert.Len(t, owned.Sets, 16)
 }
 
 func TestVerifyExistingChains(t *testing.T) {

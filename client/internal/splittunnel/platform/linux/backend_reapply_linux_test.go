@@ -168,3 +168,33 @@ func TestBackendReapplyUsesClonedOptions(t *testing.T) {
 	assert.Equal(t, "wt-exit4", exit.target.Interface,
 		"reapply must not observe a caller mutation of the stored options")
 }
+
+func TestBackendReapplyRestoresKillSwitchAndClonedDNS(t *testing.T) {
+	manager := &fakeManager{createdTable: true}
+	router := &fakeRouter{}
+	b := initializedBackend(t, manager, router)
+
+	compiled := killSwitchCompiled(t, config.KillSwitchGlobal)
+	options := testOptions()
+	options.DNSResolvers = []netip.Prefix{netip.MustParsePrefix("10.0.1.53/32")}
+	require.NoError(t, b.ApplyPolicy(context.Background(), compiled, options))
+
+	options.DNSResolvers[0] = netip.MustParsePrefix("10.0.9.53/32")
+	require.NoError(t, b.Reapply(context.Background()))
+
+	require.Len(t, manager.appliedPolicies, 2)
+	last := manager.appliedPolicies[1]
+	assert.NotEmpty(t, last.killswitch, "reconcile must reinstall the kill switch atomically")
+	assert.Equal(t, []netip.Prefix{netip.MustParsePrefix("10.8.0.0/16")},
+		last.sets[setKillSwitchControl4])
+
+	found := false
+	for _, rule := range last.killswitch {
+		for _, match := range rule.matches {
+			if match.prefix == netip.MustParsePrefix("10.0.1.53/32") && match.port == 53 {
+				found = true
+			}
+		}
+	}
+	assert.True(t, found, "reapply must use the cloned DNS resolver list")
+}
