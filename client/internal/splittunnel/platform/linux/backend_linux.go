@@ -68,6 +68,10 @@ type Backend struct {
 	cleanupDone   bool
 	closed        bool
 	policyApplied bool
+	lastPolicy    *policy.CompiledPolicy
+	lastOptions   backend.PolicyOptions
+	hasPolicy     bool
+	generation    uint64
 	lastError     string
 	updatedAt     time.Time
 }
@@ -177,6 +181,9 @@ func (b *Backend) Initialize(ctx context.Context) error {
 // protected class whose target is absent is installed with an unreachable
 // default instead of falling back to the physical path. IPv6 is applied only
 // when the compiled policy enables it and the host has a usable IPv6 stack.
+//
+// A successful apply becomes the policy that Reapply restores after a network
+// change. A failed apply leaves the previous successful policy in place.
 func (b *Backend) ApplyPolicy(
 	ctx context.Context,
 	compiled *policy.CompiledPolicy,
@@ -189,6 +196,37 @@ func (b *Backend) ApplyPolicy(
 	b.mu.Lock()
 	defer b.mu.Unlock()
 
+	return b.applyPolicyLocked(ctx, compiled, options)
+}
+
+// Reapply re-applies the last successfully applied policy. It is used by the
+// netlink reconciler after interface, address, route or gateway changes. It
+// returns nil before any policy has been applied and for a disabled policy.
+func (b *Backend) Reapply(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return backend.ErrClosed
+	}
+	if !b.initialized {
+		return backend.ErrNotInitialized
+	}
+	if !b.hasPolicy || b.lastPolicy == nil || !b.lastPolicy.Enabled {
+		return nil
+	}
+	return b.applyPolicyLocked(ctx, b.lastPolicy, b.lastOptions)
+}
+
+func (b *Backend) applyPolicyLocked(
+	ctx context.Context,
+	compiled *policy.CompiledPolicy,
+	options backend.PolicyOptions,
+) error {
 	if b.closed {
 		return backend.ErrClosed
 	}
@@ -219,6 +257,8 @@ func (b *Backend) ApplyPolicy(
 		return err
 	}
 	if !compiled.Enabled {
+		b.rememberPolicyLocked(compiled, options)
+		b.generation++
 		b.lastError = ""
 		b.updatedAt = time.Now().UTC()
 		return nil
@@ -236,9 +276,35 @@ func (b *Backend) ApplyPolicy(
 	}
 
 	b.policyApplied = true
+	b.rememberPolicyLocked(compiled, options)
+	b.generation++
 	b.lastError = ""
 	b.updatedAt = time.Now().UTC()
 	return nil
+}
+
+// rememberPolicyLocked stores the last successful policy so the netlink
+// reconciler can restore it. The compiled policy is immutable after
+// compilation and the options are deep-copied at this boundary.
+func (b *Backend) rememberPolicyLocked(compiled *policy.CompiledPolicy, options backend.PolicyOptions) {
+	b.lastPolicy = compiled
+	b.lastOptions = clonePolicyOptions(options)
+	b.hasPolicy = true
+}
+
+func clonePolicyOptions(options backend.PolicyOptions) backend.PolicyOptions {
+	cloned := options
+	cloned.Applications = append([]backend.ApplicationScope(nil), options.Applications...)
+	if options.ExitNode == nil {
+		return cloned
+	}
+	exit := *options.ExitNode
+	if options.ExitNode.Target6 != nil {
+		target6 := *options.ExitNode.Target6
+		exit.Target6 = &target6
+	}
+	cloned.ExitNode = &exit
+	return cloned
 }
 
 // UpdateDomainSets replaces the owned domain timeout sets with the resolved
@@ -318,6 +384,7 @@ func (b *Backend) GetStatus(ctx context.Context) (backend.Status, error) {
 		PolicyApplied: b.policyApplied,
 		LastError:     b.lastError,
 		UpdatedAt:     b.updatedAt,
+		Generation:    b.generation,
 	}, nil
 }
 
