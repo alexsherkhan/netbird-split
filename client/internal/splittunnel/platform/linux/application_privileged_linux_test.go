@@ -105,6 +105,9 @@ func startApplicationClassifier(t *testing.T) (*classifier.Manager, string) {
 	t.Helper()
 
 	base := fmt.Sprintf("nbtest-m07-%d", os.Getpid())
+	if err := os.MkdirAll(filepath.Join(classifier.DefaultRoot, base), 0o755); err != nil {
+		t.Skipf("cgroup v2 base is not writable in this environment: %v", err)
+	}
 	manager, err := classifier.New(nil, classifier.Options{
 		Root: classifier.DefaultRoot,
 		Base: base,

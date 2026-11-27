@@ -37,11 +37,11 @@ func TestNFTablesManagerLifecycleInContainer(t *testing.T) {
 
 	table := requireInetTable(t, tableName)
 	assert.Len(t, chainsInTable(t, tableName), 4, "only the four owned chains must exist")
-	assert.Len(t, setsInTable(t, table), 10, "only the ten owned sets must exist")
+	assert.Len(t, setsInTable(t, table), len(setSpecs()), "only the owned sets must exist")
 
 	require.NoError(t, manager.Ensure(context.Background()))
 	assert.Len(t, chainsInTable(t, tableName), 4, "a repeated Ensure must not duplicate chains")
-	assert.Len(t, setsInTable(t, table), 10, "a repeated Ensure must not duplicate sets")
+	assert.Len(t, setsInTable(t, table), len(setSpecs()), "a repeated Ensure must not duplicate sets")
 
 	createForeignTable(t, foreignTableName)
 
