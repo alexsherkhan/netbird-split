@@ -29,7 +29,7 @@ type fakeSplitServer struct {
 	config      *proto.SplitTunnelConfig
 	revision    uint64
 	hasConfig   bool
-	configEr    error
+	configErr   error
 	setErr      error
 	rollbackErr error
 	apps        []*proto.SplitTunnelApplication
@@ -59,8 +59,8 @@ func (s *fakeSplitServer) GetStatus(context.Context, *proto.GetSplitTunnelStatus
 func (s *fakeSplitServer) GetConfig(context.Context, *proto.GetSplitTunnelConfigRequest) (*proto.GetSplitTunnelConfigResponse, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if s.configEr != nil {
-		return nil, s.configEr
+	if s.configErr != nil {
+		return nil, s.configErr
 	}
 	var cfg *proto.SplitTunnelConfig
 	if s.hasConfig {
