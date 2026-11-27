@@ -12,6 +12,7 @@ import {
     NetworkIcon,
     ShieldIcon,
     SlidersHorizontalIcon,
+    SplitIcon,
     SquareTerminalIcon,
     UserCircleIcon,
 } from "lucide-react";
@@ -79,6 +80,11 @@ export const SettingsNavigation = () => {
                         title={t("settings.tabs.advanced")}
                     />
                 )}
+                <VerticalTabs.Trigger
+                    value={"split-tunnel"}
+                    icon={SplitIcon}
+                    title={t("settings.tabs.splitTunnel")}
+                />
                 <VerticalTabs.Trigger
                     value={"troubleshooting"}
                     icon={LifeBuoyIcon}

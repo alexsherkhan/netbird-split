@@ -17,6 +17,7 @@ import { SettingsVNC } from "@/modules/settings/SettingsVNC.tsx";
 import { SettingsAdvanced } from "@/modules/settings/SettingsAdvanced.tsx";
 import { SettingsTroubleshooting } from "@/modules/settings/SettingsTroubleshooting.tsx";
 import { SettingsAbout } from "@/modules/settings/SettingsAbout.tsx";
+import { SplitTunnelScreen } from "@/modules/split-tunnel/SplitTunnelScreen.tsx";
 import { useRestrictions } from "@/contexts/RestrictionsContext.tsx";
 import { useDirection } from "@/hooks/useDirection";
 
@@ -30,6 +31,7 @@ const enum Tab {
     SSH = "ssh",
     VNC = "vnc",
     Advanced = "advanced",
+    SplitTunnel = "split-tunnel",
     Troubleshooting = "troubleshooting",
     About = "about",
 }
@@ -54,6 +56,7 @@ const TAB_CONTENT: Record<Tab, ReactNode> = {
     [Tab.SSH]: <SettingsSSH />,
     [Tab.VNC]: <SettingsVNC />,
     [Tab.Advanced]: <SettingsAdvanced />,
+    [Tab.SplitTunnel]: <SplitTunnelScreen />,
     [Tab.Troubleshooting]: <SettingsTroubleshooting />,
     [Tab.About]: <SettingsAbout />,
 };
@@ -81,6 +84,7 @@ export const SettingsPage = () => {
             [Tab.SSH]: mdm.allowServerSSH ?? editable,
             [Tab.VNC]: mdm.allowServerVNC ?? editable,
             [Tab.Advanced]: editable,
+            [Tab.SplitTunnel]: true,
             [Tab.Troubleshooting]: true,
             [Tab.About]: true,
         };
