@@ -26,8 +26,9 @@ func (s *Service) readIdentity(ctx context.Context) (ipcauth.Identity, error) {
 }
 
 // mutationIdentity authorizes a mutation operation. Mutations additionally
-// require either the configured authorizer to allow the caller or, by default,
-// a privileged caller. An unidentified caller is always refused.
+// require either the configured authorizer to allow the caller, the gate's
+// profile-owner level, or, outside the daemon gate, a privileged caller. An
+// unidentified caller is always refused.
 func (s *Service) mutationIdentity(ctx context.Context) (ipcauth.Identity, error) {
 	caller, err := s.readIdentity(ctx)
 	if err != nil {
@@ -43,6 +44,14 @@ func (s *Service) mutationIdentity(ctx context.Context) (ipcauth.Identity, error
 		}
 		return caller, nil
 	}
+	if level, ok := ipcauth.AuthzLevelFromContext(ctx); ok {
+		if level >= ipcauth.AuthzLevelProfileOwner {
+			return caller, nil
+		}
+		return ipcauth.Identity{}, errorWithReason(codes.PermissionDenied, ReasonMutationDenied,
+			"split tunnel mutations require the active profile owner", nil)
+	}
+	// Standalone use outside the daemon gate keeps the stricter root check.
 	if !ipcauth.IsPrivilegedCaller(caller) {
 		return ipcauth.Identity{}, errorWithReason(codes.PermissionDenied, ReasonMutationDenied,
 			"split tunnel mutations require a privileged caller", nil)

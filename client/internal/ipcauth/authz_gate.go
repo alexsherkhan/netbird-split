@@ -151,6 +151,7 @@ func (g *AuthzGate) authorize(ctx context.Context, method string, msg any) (cont
 			return ctx, err
 		}
 	}
+	ctx = WithAuthzLevel(ctx, level)
 	if policy.Audit {
 		log.Infof("ipc authz: allow %s for %s (%s)", method, id, req.Level)
 	}

@@ -11,6 +11,8 @@ import (
 	"github.com/stretchr/testify/require"
 	"google.golang.org/genproto/googleapis/rpc/errdetails"
 	"google.golang.org/grpc/codes"
+	"google.golang.org/grpc/credentials"
+	"google.golang.org/grpc/peer"
 	"google.golang.org/grpc/status"
 	"google.golang.org/protobuf/proto"
 
@@ -79,6 +81,37 @@ func TestGetStatusRedactsUnprivilegedCaller(t *testing.T) {
 		redactedProcessUID,
 		redactedProcessCgroup,
 	}, response.RedactedFields)
+}
+
+func TestMutationIdentityAllowsProfileOwnerLevel(t *testing.T) {
+	id := unprivilegedIdentity()
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		AuthInfo: ipcauth.AuthInfo{
+			CommonAuthInfo: credentials.CommonAuthInfo{SecurityLevel: credentials.NoSecurity},
+			Identity:       id,
+		},
+	})
+	ctx = ipcauth.WithAuthzLevel(ctx, ipcauth.AuthzLevelProfileOwner)
+
+	svc := New(nil)
+	caller, err := svc.mutationIdentity(ctx)
+	require.NoError(t, err)
+	assert.Equal(t, id, caller)
+}
+
+func TestMutationIdentityDeniesIdentifiedLevel(t *testing.T) {
+	id := unprivilegedIdentity()
+	ctx := peer.NewContext(context.Background(), &peer.Peer{
+		AuthInfo: ipcauth.AuthInfo{
+			CommonAuthInfo: credentials.CommonAuthInfo{SecurityLevel: credentials.NoSecurity},
+			Identity:       id,
+		},
+	})
+	ctx = ipcauth.WithAuthzLevel(ctx, ipcauth.AuthzLevelIdentified)
+
+	svc := New(nil)
+	_, err := svc.mutationIdentity(ctx)
+	requireErrorReason(t, err, codes.PermissionDenied, ReasonMutationDenied)
 }
 
 func TestGetStatusPrivilegedCallerSeesDiagnostics(t *testing.T) {

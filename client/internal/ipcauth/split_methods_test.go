@@ -61,7 +61,7 @@ func TestSplitReadsAllowIdentifiedCallers(t *testing.T) {
 	}
 }
 
-func TestSplitMutationsRequirePrivilege(t *testing.T) {
+func TestSplitMutationsRequireProfileOwnership(t *testing.T) {
 	g := gateFor(t, stubState{})
 	for _, method := range []string{"SetConfig", "RollbackConfig"} {
 		t.Run(method, func(t *testing.T) {
@@ -70,6 +70,19 @@ func TestSplitMutationsRequirePrivilege(t *testing.T) {
 			assert.Equal(t, codes.PermissionDenied, gstatus.Code(err))
 			assert.NotContains(t, err.Error(), "profile claim",
 				"a split tunnel refusal must not suggest a profile remedy")
+		})
+	}
+}
+
+func TestSplitProfileOwnerMutationsAllowed(t *testing.T) {
+	g := gateFor(t, stubState{target: Target{Path: "/profiles/active.json", Owned: true}})
+	for _, method := range []string{"SetConfig", "RollbackConfig"} {
+		t.Run(method, func(t *testing.T) {
+			ctx, err := g.authorize(transportCtx(unprivUser, nil), splitServicePath+method, nil)
+			require.NoError(t, err)
+			level, ok := AuthzLevelFromContext(ctx)
+			require.True(t, ok)
+			assert.GreaterOrEqual(t, level, AuthzLevelProfileOwner)
 		})
 	}
 }

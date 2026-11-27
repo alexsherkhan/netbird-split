@@ -1994,5 +1994,421 @@
     "error.profile_unowned": {
         "message": "This profile has no owner yet.",
         "description": "Short headline when the daemon refuses an action because the profile it addresses has no owner recorded yet. The daemon's own sentence is shown as the detail, followed by a copyable command that records an owner."
+    },
+    "settings.tabs.splitTunnel": {
+        "message": "Split tunneling",
+        "description": "Settings sidebar tab that opens the split tunneling screen."
+    },
+    "header.menu.splitTunnel": {
+        "message": "Split tunneling",
+        "description": "Main window menu item that opens the split tunneling settings screen."
+    },
+    "splitTunnel.title": {
+        "message": "Split tunneling",
+        "description": "Title of the split tunneling screen."
+    },
+    "splitTunnel.description": {
+        "message": "Route selected traffic through NetBird, directly, through an exit node, or not at all. Changes go through the background service.",
+        "description": "Introductory sentence under the split tunneling title. Keep it non-technical enough for a settings screen."
+    },
+    "splitTunnel.unavailable.title": {
+        "message": "Split tunneling is not available",
+        "description": "Panel title shown when the daemon does not implement the split tunnel API or speaks an unsupported version."
+    },
+    "splitTunnel.unavailable.description": {
+        "message": "The background service does not offer split tunnel controls. Update NetBird to use this screen.",
+        "description": "Explanation under the unavailable title. Tell the user the daemon needs an update."
+    },
+    "splitTunnel.unavailable.retry": {
+        "message": "Check again",
+        "description": "Button that retries the split tunnel status read after an unavailable response."
+    },
+    "splitTunnel.error.loadTitle": {
+        "message": "Could not read split tunnel status",
+        "description": "Inline error title when the split tunnel status or configuration could not be loaded."
+    },
+    "splitTunnel.error.saveTitle": {
+        "message": "Could not save split tunnel settings",
+        "description": "Inline error title when applying split tunnel settings failed, including validation failures."
+    },
+    "splitTunnel.error.conflictTitle": {
+        "message": "Settings changed elsewhere",
+        "description": "Inline error title when the daemon rejected the write because another client changed the configuration revision."
+    },
+    "splitTunnel.error.conflictHint": {
+        "message": "Nothing was saved. Reload the daemon settings and apply your change again.",
+        "description": "Explanation under the revision conflict error. Tell the user the write did not happen."
+    },
+    "splitTunnel.error.permissionTitle": {
+        "message": "Not allowed to change split tunneling",
+        "description": "Inline error title when the daemon refuses a split tunnel mutation for this caller."
+    },
+    "splitTunnel.error.reload": {
+        "message": "Reload",
+        "description": "Button that discards local edits and reloads split tunnel settings from the daemon."
+    },
+    "splitTunnel.overview.title": {
+        "message": "Overview",
+        "description": "Section title for the split tunnel status summary."
+    },
+    "splitTunnel.overview.connection": {
+        "message": "NetBird connection",
+        "description": "Status tile label for the overall NetBird connection state."
+    },
+    "splitTunnel.overview.engine": {
+        "message": "Split tunnel engine",
+        "description": "Status tile label for whether the split tunnel engine is running."
+    },
+    "splitTunnel.overview.mode": {
+        "message": "Routing mode",
+        "description": "Status tile label for the split tunnel mode."
+    },
+    "splitTunnel.overview.exitNode": {
+        "message": "Exit node",
+        "description": "Status tile label for the exit node selected by split tunnel rules."
+    },
+    "splitTunnel.overview.killSwitch": {
+        "message": "Kill switch",
+        "description": "Status tile label for the kill switch protection level."
+    },
+    "splitTunnel.overview.backend": {
+        "message": "Backend",
+        "description": "Status tile label for the platform networking backend name and health."
+    },
+    "splitTunnel.state.running": {
+        "message": "Running",
+        "description": "Split tunnel engine state: enabled and applied."
+    },
+    "splitTunnel.state.enabledNotRunning": {
+        "message": "Enabled, not running",
+        "description": "Split tunnel engine state: the configuration enables it but the engine is not applied."
+    },
+    "splitTunnel.state.stopped": {
+        "message": "Stopped",
+        "description": "Split tunnel engine state: disabled or not configured."
+    },
+    "splitTunnel.state.backendUnavailable": {
+        "message": "Unavailable",
+        "description": "Backend value shown when the daemon does not report a platform backend."
+    },
+    "splitTunnel.badge.running": {
+        "message": "Running",
+        "description": "Badge text for a healthy running split tunnel engine."
+    },
+    "splitTunnel.badge.degraded": {
+        "message": "Degraded",
+        "description": "Badge text for a split tunnel engine that is enabled but not running, or a backend with limited capability."
+    },
+    "splitTunnel.badge.stopped": {
+        "message": "Stopped",
+        "description": "Badge text for a stopped split tunnel engine."
+    },
+    "splitTunnel.badge.off": {
+        "message": "Off",
+        "description": "Badge text for a disabled kill switch."
+    },
+    "splitTunnel.badge.on": {
+        "message": "On",
+        "description": "Badge text for an enabled kill switch."
+    },
+    "splitTunnel.badge.healthy": {
+        "message": "Healthy",
+        "description": "Badge text for a backend that reports no degraded capability."
+    },
+    "splitTunnel.mode.standard": {
+        "message": "Standard",
+        "description": "Split tunnel mode that leaves routing to the normal NetBird client behavior."
+    },
+    "splitTunnel.mode.include": {
+        "message": "Include",
+        "description": "Split tunnel mode that sends matched rules through the VPN and everything else directly."
+    },
+    "splitTunnel.mode.exclude": {
+        "message": "Exclude",
+        "description": "Split tunnel mode that sends matched rules directly and everything else through the VPN."
+    },
+    "splitTunnel.mode.custom": {
+        "message": "Custom",
+        "description": "Split tunnel mode that allows every supported action and a chosen default action."
+    },
+    "splitTunnel.killSwitch.disabled": {
+        "message": "Disabled",
+        "description": "Kill switch protection level: no failure protection is installed."
+    },
+    "splitTunnel.killSwitch.selective": {
+        "message": "Selective",
+        "description": "Kill switch protection level: protect only traffic selected for the VPN."
+    },
+    "splitTunnel.killSwitch.global": {
+        "message": "Global",
+        "description": "Kill switch protection level: protect all internet traffic."
+    },
+    "splitTunnel.killSwitch.strict": {
+        "message": "Strict",
+        "description": "Kill switch protection level: protect all traffic except explicitly allowed direct traffic."
+    },
+    "splitTunnel.defaultAction.vpn": {
+        "message": "Through NetBird",
+        "description": "Default action in custom mode: send unmatched traffic through the NetBird overlay."
+    },
+    "splitTunnel.defaultAction.direct": {
+        "message": "Direct",
+        "description": "Default action in custom mode: send unmatched traffic directly to the internet."
+    },
+    "splitTunnel.defaultAction.block": {
+        "message": "Block",
+        "description": "Default action in custom mode: drop unmatched traffic."
+    },
+    "splitTunnel.degraded.title": {
+        "message": "Degraded capability",
+        "description": "Panel title listing split tunnel health problems reported by the daemon."
+    },
+    "splitTunnel.degraded.reason.backend_unavailable": {
+        "message": "The networking backend is unavailable.",
+        "description": "Degraded reason: the platform backend is missing or failed to initialize."
+    },
+    "splitTunnel.degraded.reason.backend_degraded": {
+        "message": "The networking backend is running with limited capability.",
+        "description": "Degraded reason: the platform backend is initialized but at least one capability is unavailable."
+    },
+    "splitTunnel.degraded.reason.backend_error": {
+        "message": "The networking backend reported an error.",
+        "description": "Degraded reason: the platform backend returned an error. A technical detail may follow."
+    },
+    "splitTunnel.degraded.reason.config_invalid": {
+        "message": "The split tunnel configuration is invalid.",
+        "description": "Degraded reason: the daemon could not load the stored configuration."
+    },
+    "splitTunnel.degraded.reason.apply_failed": {
+        "message": "The last split tunnel policy apply failed.",
+        "description": "Degraded reason: the daemon could not apply the compiled policy."
+    },
+    "splitTunnel.degraded.reason.reconcile_failed": {
+        "message": "The last application scope reconciliation failed.",
+        "description": "Degraded reason: the daemon could not reconcile running applications with the policy."
+    },
+    "splitTunnel.degraded.reason.not_running": {
+        "message": "Split tunneling is enabled but the engine is not running.",
+        "description": "Degraded reason: enabled and running disagree."
+    },
+    "splitTunnel.degraded.reason.domain_conflicts": {
+        "message": "Some domains resolve to addresses claimed by more than one rule.",
+        "description": "Degraded reason: domain conflict diagnostics report a non-zero count."
+    },
+    "splitTunnel.diagnostics.title": {
+        "message": "Diagnostics",
+        "description": "Expandable summary that reveals raw split tunnel diagnostic names and values."
+    },
+    "splitTunnel.diagnostics.restrictedTitle": {
+        "message": "Diagnostics are restricted",
+        "description": "Panel title when the daemon redacts diagnostics for this caller."
+    },
+    "splitTunnel.diagnostics.restricted": {
+        "message": "This account can view split tunnel status but cannot see diagnostic details. An administrator account can.",
+        "description": "Explanation under the restricted diagnostics title."
+    },
+    "splitTunnel.settings.title": {
+        "message": "Settings",
+        "description": "Section title for the editable split tunnel settings."
+    },
+    "splitTunnel.settings.enabled.label": {
+        "message": "Enable split tunneling",
+        "description": "Switch label that enables or disables the split tunnel engine."
+    },
+    "splitTunnel.settings.enabled.help": {
+        "message": "Applies the configured routing mode and rules when you save.",
+        "description": "Help text under the enable switch."
+    },
+    "splitTunnel.settings.enabled.chooseMode": {
+        "message": "Choose include, exclude or custom mode before enabling split tunneling.",
+        "description": "Help text under the enable switch when the selected mode is standard, which cannot run the engine."
+    },
+    "splitTunnel.settings.mode.label": {
+        "message": "Mode",
+        "description": "Label for the routing mode selector."
+    },
+    "splitTunnel.settings.mode.help": {
+        "message": "Include sends matched traffic through NetBird. Exclude sends matched traffic directly. Custom uses each rule's action.",
+        "description": "Help text under the mode selector."
+    },
+    "splitTunnel.settings.defaultAction.label": {
+        "message": "Default action",
+        "description": "Label for the default action selector shown in custom mode."
+    },
+    "splitTunnel.settings.defaultAction.help": {
+        "message": "Traffic that no rule matches uses this action.",
+        "description": "Help text under the default action selector."
+    },
+    "splitTunnel.settings.killSwitch.label": {
+        "message": "Kill switch",
+        "description": "Label for the kill switch level selector."
+    },
+    "splitTunnel.settings.killSwitch.help": {
+        "message": "Protects traffic if the tunnel fails. A higher level protects more traffic but can interrupt connectivity.",
+        "description": "Help text under the kill switch selector."
+    },
+    "splitTunnel.settings.killSwitch.inactive": {
+        "message": "Kill switch protection is inactive while split tunneling is disabled.",
+        "description": "Warning under the kill switch selector when a protection level is selected but the engine is disabled."
+    },
+    "splitTunnel.exitNodes.label": {
+        "message": "Exit nodes",
+        "description": "Label for the exit node selection list."
+    },
+    "splitTunnel.exitNodes.help": {
+        "message": "Rules that route through an exit node use this selection.",
+        "description": "Help text under the exit node list."
+    },
+    "splitTunnel.exitNodes.noRules": {
+        "message": "No rule routes through an exit node yet. Rule editing is not available in this release.",
+        "description": "Empty state under the exit node list when the configuration has no exit_node rules."
+    },
+    "splitTunnel.exitNodes.noneSelected": {
+        "message": "Not selected",
+        "description": "Status value when no split tunnel rule uses an exit node."
+    },
+    "splitTunnel.exitNodes.selectFor": {
+        "message": "Exit node for {rule}",
+        "description": "Accessible label for the exit node selector belonging to one rule. {rule} is the rule name or ID."
+    },
+    "splitTunnel.exitNodes.unavailable": {
+        "message": "No exit nodes are available to select.",
+        "description": "Shown when no discovered exit node or existing rule value can fill the selector."
+    },
+    "splitTunnel.confirm.title": {
+        "message": "Confirm split tunnel change",
+        "description": "Title of the confirmation dialog before disabling split tunneling or switching to standard mode."
+    },
+    "splitTunnel.confirm.disable": {
+        "message": "Disabling split tunneling stops routing and can leave kill switch protection inactive. Continue?",
+        "description": "Confirmation dialog text when the user disables split tunneling."
+    },
+    "splitTunnel.confirm.standard": {
+        "message": "Standard mode disables split tunneling and can leave kill switch protection inactive. Continue?",
+        "description": "Confirmation dialog text when the user switches to standard mode while split tunneling is enabled."
+    },
+    "splitTunnel.confirm.killSwitch": {
+        "message": "Turning off the kill switch removes failure protection. Continue?",
+        "description": "Confirmation dialog text when the user changes an active kill switch level to disabled."
+    },
+    "splitTunnel.confirm.action": {
+        "message": "Apply change",
+        "description": "Confirm button in the split tunnel confirmation dialog."
+    },
+    "splitTunnel.applied": {
+        "message": "Split tunnel settings applied.",
+        "description": "Success notice after the daemon accepted and applied a configuration revision."
+    },
+    "splitTunnel.unsaved": {
+        "message": "Unsaved changes",
+        "description": "Status text shown beside the save buttons when local edits differ from the daemon."
+    },
+    "splitTunnel.saved": {
+        "message": "No unsaved changes",
+        "description": "Status text shown beside the save buttons when local edits match the daemon."
+    },
+    "splitTunnel.discard": {
+        "message": "Discard",
+        "description": "Button that discards local split tunnel edits."
+    },
+    "splitTunnel.upcoming.title": {
+        "message": "Not in this release",
+        "description": "Section title for split tunnel features planned for later milestones."
+    },
+    "splitTunnel.upcoming.rulesTitle": {
+        "message": "Rule editor",
+        "description": "Title of the unavailable rule editor entry point."
+    },
+    "splitTunnel.upcoming.rulesDescription": {
+        "message": "Add, reorder and edit application, domain and network rules.",
+        "description": "Description of the unavailable rule editor entry point."
+    },
+    "splitTunnel.upcoming.dnsTitle": {
+        "message": "DNS cache and activity",
+        "description": "Title of the unavailable DNS cache and activity entry point."
+    },
+    "splitTunnel.upcoming.dnsDescription": {
+        "message": "Inspect tracked domains, cached addresses and recent routing decisions.",
+        "description": "Description of the unavailable DNS cache and activity entry point."
+    },
+    "splitTunnel.upcoming.supportTitle": {
+        "message": "Split tunnel support bundle",
+        "description": "Title of the unavailable split tunnel support bundle entry point."
+    },
+    "splitTunnel.upcoming.supportDescription": {
+        "message": "Collect split tunnel diagnostics into a bundle for support.",
+        "description": "Description of the unavailable split tunnel support bundle entry point."
+    },
+    "splitTunnel.upcoming.comingSoon": {
+        "message": "Coming later",
+        "description": "Disabled button text for a split tunnel feature planned for a later release."
+    },
+    "splitTunnel.upcoming.unavailableHint": {
+        "message": "This split tunnel feature is not available in this release.",
+        "description": "Tooltip for a disabled split tunnel feature entry point."
+    },
+    "error.split_tunnel_revision_conflict": {
+        "message": "Split tunnel settings changed elsewhere.",
+        "description": "Short error headline when the daemon rejects a split tunnel write because the configuration revision is stale."
+    },
+    "error.split_tunnel_invalid_config": {
+        "message": "The split tunnel configuration is invalid.",
+        "description": "Short error headline when the daemon rejects a split tunnel configuration. Daemon detail is shown under it."
+    },
+    "error.split_tunnel_invalid_request": {
+        "message": "The split tunnel request is invalid.",
+        "description": "Short error headline when the daemon rejects a malformed split tunnel request."
+    },
+    "error.split_tunnel_version_unsupported": {
+        "message": "This NetBird version does not support the split tunnel API.",
+        "description": "Short error headline when the daemon and client split tunnel API versions do not match."
+    },
+    "error.split_tunnel_unavailable": {
+        "message": "Split tunneling is not available.",
+        "description": "Short error headline when the daemon does not implement the requested split tunnel operation."
+    },
+    "error.split_tunnel_backend_unavailable": {
+        "message": "The split tunnel networking backend is unavailable.",
+        "description": "Short error headline when the platform networking backend cannot be used."
+    },
+    "error.split_tunnel_authentication_required": {
+        "message": "NetBird could not verify this account for split tunneling.",
+        "description": "Short error headline when the daemon cannot identify the local caller for a split tunnel read or write."
+    },
+    "error.split_tunnel_mutation_denied": {
+        "message": "This account cannot change split tunnel settings.",
+        "description": "Short error headline when the daemon refuses a split tunnel mutation because the caller is not authorized."
+    },
+    "error.split_tunnel_rate_limited": {
+        "message": "Too many split tunnel requests. Try again shortly.",
+        "description": "Short error headline when the daemon rate-limits split tunnel requests."
+    },
+    "error.split_tunnel_invalid_response": {
+        "message": "The daemon returned an invalid split tunnel response.",
+        "description": "Short error headline for a malformed split tunnel response from the daemon."
+    },
+    "error.split_tunnel_invalid_mode": {
+        "message": "Choose a valid split tunnel mode.",
+        "description": "Short error headline when the requested mode is not supported."
+    },
+    "error.split_tunnel_mode_required": {
+        "message": "Choose a mode before enabling split tunneling.",
+        "description": "Short error headline when enabling split tunneling in standard mode, which cannot run the engine."
+    },
+    "error.split_tunnel_invalid_kill_switch": {
+        "message": "Choose a valid kill switch level.",
+        "description": "Short error headline when the requested kill switch level is not supported."
+    },
+    "error.split_tunnel_invalid_default_action": {
+        "message": "Choose a valid default action for custom mode.",
+        "description": "Short error headline when custom mode has no valid default action."
+    },
+    "error.split_tunnel_invalid_exit_node": {
+        "message": "Choose a valid exit node for the rule.",
+        "description": "Short error headline when an exit node selection is incomplete or targets a rule that does not use an exit node."
+    },
+    "error.split_tunnel_rule_not_found": {
+        "message": "The split tunnel rule no longer exists.",
+        "description": "Short error headline when an exit node selection names a rule the daemon no longer has."
     }
 }

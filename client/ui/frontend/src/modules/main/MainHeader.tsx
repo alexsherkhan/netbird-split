@@ -6,6 +6,7 @@ import {
     MoreVertical,
     PanelsRightBottom,
     RectangleVertical,
+    Route as RouteIcon,
     Settings,
     type LucideIcon,
 } from "lucide-react";
@@ -52,6 +53,13 @@ export const MainHeader = () => {
         setMenuOpen(false);
         WindowManager.OpenSettings("about").catch((err: unknown) =>
             console.error("open settings (about) window failed", err),
+        );
+    };
+
+    const openSplitTunnel = () => {
+        setMenuOpen(false);
+        WindowManager.OpenSettings("split-tunnel").catch((err: unknown) =>
+            console.error("open settings (split tunnel) window failed", err),
         );
     };
 
@@ -116,6 +124,12 @@ export const MainHeader = () => {
                             <DropdownMenuShortcut>
                                 {formatShortcut(SETTINGS_SHORTCUT)}
                             </DropdownMenuShortcut>
+                        </div>
+                    </DropdownMenuItem>
+                    <DropdownMenuItem onClick={openSplitTunnel}>
+                        <div className={"flex w-full items-center gap-2"}>
+                            <RouteIcon size={14} aria-hidden={"true"} />
+                            <span className={"flex-1"}>{t("header.menu.splitTunnel")}</span>
                         </div>
                     </DropdownMenuItem>
                     {!mdm.disableAdvancedView && (
