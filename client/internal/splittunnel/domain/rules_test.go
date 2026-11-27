@@ -107,6 +107,34 @@ func TestRulesFromPolicyRejectsMultipleDomains(t *testing.T) {
 	require.Error(t, err)
 }
 
+func TestRulesFromPolicyRejectsDomainWithOtherConditions(t *testing.T) {
+	cfg := &config.Config{
+		SchemaVersion: config.CurrentSchemaVersion,
+		SplitTunnel: config.SplitTunnel{
+			Enabled:       true,
+			Mode:          config.ModeCustom,
+			DefaultAction: config.ActionDirect,
+			Rules: []config.Rule{{
+				ID:        "domain-port",
+				Name:      "domain-port",
+				Enabled:   true,
+				Priority:  10,
+				MatchMode: config.MatchAll,
+				Action:    config.ActionVPN,
+				Conditions: []config.Condition{
+					{Type: config.ConditionDomain, Domain: "example.com"},
+					{Type: config.ConditionProtocolPort, Protocol: config.ProtocolTCP, Port: 443},
+				},
+			}},
+		},
+	}
+	compiled, err := policy.Compile(cfg)
+	require.NoError(t, err)
+
+	_, _, err = RulesFromPolicy(compiled)
+	require.Error(t, err)
+}
+
 func TestRulesFromPolicyRejectsDomainExitNode(t *testing.T) {
 	cfg := &config.Config{
 		SchemaVersion: config.CurrentSchemaVersion,

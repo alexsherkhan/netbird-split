@@ -223,42 +223,28 @@ func TestCompilePolicyDomainConditions(t *testing.T) {
 	assert.Empty(t, plan.nft.sets[setBlocked4], "a domain block rule must not fill the prefix set")
 }
 
-func TestCompilePolicyDomainWithCIDRUsesDomainAndPrefixMatch(t *testing.T) {
-	allocations := testAllocations(t)
+func TestCompilePolicyRejectsDomainWithCIDR(t *testing.T) {
 	compiled := mustCompile(t, includeConfig(
 		testRule("vpn", config.ActionVPN,
 			config.Condition{Type: config.ConditionDomain, Domain: "example.com"},
 			cidrCondition("10.0.0.0/8")),
 	))
-	plan, err := compilePolicy(compiled, testOptions(), allocations)
-	require.NoError(t, err)
 
-	rules := rulesWithMark(plan, allocations.byClass[classVPN].mark.Value)
-	require.Len(t, rules, 1)
-	require.Len(t, rules[0].matches, 2)
-	assert.Equal(t, setDomains4, rules[0].matches[0].set)
-	assert.Equal(t, setVPN4, rules[0].matches[1].set)
-	assert.Equal(t, []netip.Prefix{netip.MustParsePrefix("10.0.0.0/8")},
-		plan.nft.sets[setVPN4])
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, backend.ErrUnsupportedCondition)
 }
 
-func TestCompilePolicyDomainWithProtocolUsesDomainSetAndLiteralPort(t *testing.T) {
-	allocations := testAllocations(t)
+func TestCompilePolicyRejectsDomainWithProtocol(t *testing.T) {
 	compiled := mustCompile(t, includeConfig(
 		testRule("vpn", config.ActionVPN,
 			config.Condition{Type: config.ConditionDomain, Domain: "example.com"},
 			portCondition(config.ProtocolTCP, 443)),
 	))
-	plan, err := compilePolicy(compiled, testOptions(), allocations)
-	require.NoError(t, err)
 
-	rules := rulesWithMark(plan, allocations.byClass[classVPN].mark.Value)
-	require.Len(t, rules, 1)
-	require.Len(t, rules[0].matches, 2)
-	assert.Equal(t, setDomains4, rules[0].matches[0].set)
-	assert.Equal(t, config.ProtocolTCP, rules[0].matches[1].protocol)
-	assert.Equal(t, uint16(443), rules[0].matches[1].port)
-	assert.Empty(t, plan.nft.sets[setVPN4])
+	_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.Error(t, err)
+	assert.ErrorIs(t, err, backend.ErrUnsupportedCondition)
 }
 
 func TestCompilePolicyRejectsMultipleDomainConditions(t *testing.T) {

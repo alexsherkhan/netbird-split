@@ -319,32 +319,15 @@ func TestCompilePolicyIPv6VPNWithoutTargetFailsClosed(t *testing.T) {
 		"protected IPv6 without an overlay target must be unreachable")
 }
 
-func TestCompilePolicyIPv6DomainWithCIDR(t *testing.T) {
+func TestCompilePolicyRejectsIPv6DomainWithCIDR(t *testing.T) {
 	cfg := includeConfig(testRule("vpn6", config.ActionVPN,
 		ipv6CIDRCondition("2001:db8::/32"),
 		config.Condition{Type: config.ConditionWildcardDomain, Wildcard: "example.com"}))
 	cfg.SplitTunnel.IPv6 = true
 	compiled := mustCompile(t, cfg)
 
-	plan, err := compilePolicy(compiled, testOptions6(), testAllocations(t))
-	require.NoError(t, err)
-
-	seen := false
-	for _, rule := range plan.nft.rules {
-		if rule.family != family6 {
-			continue
-		}
-		sets := make(map[setName]bool)
-		for _, match := range rule.matches {
-			if match.set != "" {
-				sets[match.set] = true
-			}
-		}
-		if sets[setDomains6] && sets[setVPN6] {
-			seen = true
-		}
-	}
-	assert.True(t, seen, "a v6 domain plus v6 CIDR rule must match both owned v6 sets")
+	_, err := compilePolicy(compiled, testOptions6(), testAllocations(t))
+	require.ErrorIs(t, err, backend.ErrUnsupportedCondition)
 }
 
 func TestCompilePolicyRejectsMixedFamilyConjunction(t *testing.T) {

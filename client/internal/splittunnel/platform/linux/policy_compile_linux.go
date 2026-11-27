@@ -591,6 +591,17 @@ func parseConjunction(conjunction []config.Condition) (conjunctionPlan, error) {
 			}
 		}
 	}
+	if len(plan.domains) > 1 {
+		return conjunctionPlan{}, fmt.Errorf(
+			"multiple domain conditions in one conjunction: %w", backend.ErrUnsupportedCondition)
+	}
+	// Domain sets are shared per action. A domain rule with an additional
+	// condition would widen every other domain rule for the same action, so
+	// reject the combination until per-rule sets exist.
+	if len(plan.domains) > 0 && (plan.hasProtocol() || len(plan.prefixes) > 0 || plan.hasIdentity()) {
+		return conjunctionPlan{}, fmt.Errorf(
+			"domain condition combined with other conditions: %w", backend.ErrUnsupportedCondition)
+	}
 	return plan, nil
 }
 

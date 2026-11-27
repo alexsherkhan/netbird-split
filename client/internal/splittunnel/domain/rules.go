@@ -71,6 +71,14 @@ func RulesFromPolicy(compiled *policy.CompiledPolicy) (*Rules, []RuleConflict, e
 			return nil, nil, fmt.Errorf("rule %q: multiple domain conditions are not supported",
 				rule.ID)
 		}
+		// Domain sets are shared per action. A domain rule with an
+		// additional condition would widen every other domain rule for the
+		// same action, so reject the combination until per-rule sets exist.
+		if hasNonDomainCondition(rule.Conditions) {
+			return nil, nil, fmt.Errorf(
+				"rule %q: domain conditions combined with other conditions are not supported",
+				rule.ID)
+		}
 
 		action := rule.Action
 		if action == config.ActionDefault {
@@ -224,4 +232,19 @@ func SortedRuleConflicts(conflicts []RuleConflict) []RuleConflict {
 		out[i].RuleIDs = append([]config.RuleID(nil), out[i].RuleIDs...)
 	}
 	return out
+}
+
+func hasNonDomainCondition(conditions []config.Condition) bool {
+	for i := range conditions {
+		switch conditions[i].Type {
+		case config.ConditionDomain, config.ConditionWildcardDomain:
+		case config.ConditionAll, config.ConditionAny:
+			if hasNonDomainCondition(conditions[i].Children) {
+				return true
+			}
+		default:
+			return true
+		}
+	}
+	return false
 }
