@@ -1,0 +1,226 @@
+name: NetBird Split Packages
+
+on:
+  pull_request:
+    paths:
+      - "client/**"
+      - "packaging/netbird-split/**"
+      - "release_files/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/netbird-split-package.yml"
+  push:
+    branches:
+      - develop
+      - main
+    paths:
+      - "client/**"
+      - "packaging/netbird-split/**"
+      - "release_files/**"
+      - "go.mod"
+      - "go.sum"
+      - ".github/workflows/netbird-split-package.yml"
+  workflow_dispatch:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}-${{ github.head_ref || github.actor_id }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  GOFLAGS: -buildvcs=false
+
+jobs:
+  lint:
+    name: "Lint and shell checks"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "go.mod"
+          cache: false
+
+      - name: Check Go formatting
+        run: |
+          unformatted="$(gofmt -l client/internal/splittunnel client/internal/daemonaddr client/cmd)"
+          if [ -n "$unformatted" ]; then
+            echo "gofmt needed on:"
+            echo "$unformatted"
+            exit 1
+          fi
+
+      - name: Vet split-tunnel packages
+        run: go vet ./client/internal/splittunnel/... ./client/internal/daemonaddr/...
+
+      - name: golangci-lint split-tunnel packages
+        uses: golangci/golangci-lint-action@82606bf257cbaff209d206a39f5134f0cfbfd2ee # v9.2.1
+        with:
+          version: latest
+          skip-cache: true
+          skip-save-cache: true
+          cache-invalidation-interval: 0
+          args: --timeout=10m ./client/internal/splittunnel/... ./client/internal/daemonaddr/...
+
+      - name: Install shell checkers
+        run: sudo apt-get update && sudo apt-get install -y shellcheck bats
+
+      - name: Shell syntax checks
+        run: |
+          sh -n packaging/netbird-split/scripts/postinst
+          sh -n packaging/netbird-split/scripts/prerm
+          sh -n packaging/netbird-split/scripts/postrm
+          sh -n packaging/netbird-split/assets/netbird-split-wrapper.sh
+          bash -n packaging/netbird-split/scripts/build.sh
+          bash -n packaging/netbird-split/scripts/tarball-install.sh
+          bash -n packaging/netbird-split/scripts/tarball-uninstall.sh
+          bash -n packaging/netbird-split/tests/run.sh
+
+      - name: Shellcheck errors
+        run: shellcheck -S error packaging/netbird-split/scripts/* packaging/netbird-split/assets/*.sh packaging/netbird-split/tests/*.sh
+
+      - name: Existing release script tests
+        run: bats release_files/tests/
+
+  unit:
+    name: "Split tunnel unit and race"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 20
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "go.mod"
+          cache: false
+
+      - name: Build client
+        working-directory: client
+        run: CGO_ENABLED=0 go build .
+
+      - name: Unit tests
+        run: go test -tags devcert -timeout 10m ./client/internal/splittunnel/... ./client/internal/daemonaddr/...
+
+      - name: Race tests
+        run: go test -race -tags devcert -timeout 10m ./client/internal/splittunnel/...
+
+  privileged:
+    name: "Privileged suite"
+    runs-on: ubuntu-22.04
+    timeout-minutes: 60
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "go.mod"
+          cache: false
+
+      - name: Check Docker availability
+        id: docker
+        run: |
+          if docker info >/dev/null 2>&1; then
+            echo "available=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "available=false" >> "$GITHUB_OUTPUT"
+            echo "Docker is unavailable on this runner; the privileged suite is skipped."
+          fi
+
+      - name: Run privileged suite in Docker
+        if: steps.docker.outputs.available == 'true'
+        run: make test-privileged
+
+  packages:
+    name: "Packages and validation"
+    needs: [lint, unit]
+    runs-on: ubuntu-22.04
+    timeout-minutes: 30
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+        with:
+          persist-credentials: false
+
+      - name: Install Go
+        uses: actions/setup-go@924ae3a1cded613372ab5595356fb5720e22ba16 # v6.5.0
+        with:
+          go-version-file: "go.mod"
+          cache: false
+
+      - name: Install packaging tools
+        run: sudo apt-get update && sudo apt-get install -y dpkg-dev file
+
+      - name: Build DEB and tarball artifacts
+        run: bash packaging/netbird-split/scripts/build.sh
+
+      - name: Validate packages, scripts and containers
+        env:
+          NETBIRD_SPLIT_SKIP_BUILD: "1"
+        run: bash packaging/netbird-split/tests/run.sh
+
+      - name: Verify checksums
+        working-directory: dist/netbird-split
+        run: sha256sum -c SHA256SUMS
+
+      - name: Check signing inputs
+        id: signing
+        env:
+          SIGNING_KEY: ${{ secrets.NETBIRD_SPLIT_GPG_PRIVATE_KEY }}
+        run: |
+          if [ -n "${SIGNING_KEY:-}" ] && [ "$GITHUB_EVENT_NAME" != "pull_request" ]; then
+            echo "enabled=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "enabled=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      # NETBIRD_SPLIT_GPG_PRIVATE_KEY is the base64 encoding of an ASCII-armored
+      # private key. Both it and the passphrase belong to a protected fork
+      # environment, never to an upstream repository.
+      - name: Sign checksums
+        if: steps.signing.outputs.enabled == 'true'
+        env:
+          SIGNING_KEY: ${{ secrets.NETBIRD_SPLIT_GPG_PRIVATE_KEY }}
+          SIGNING_PASSPHRASE: ${{ secrets.NETBIRD_SPLIT_GPG_PASSPHRASE }}
+        run: |
+          set -euo pipefail
+          signing_home="$(mktemp -d)"
+          trap 'rm -rf "$signing_home"' EXIT
+          export GNUPGHOME="$signing_home"
+          printf '%s' "$SIGNING_KEY" | base64 -d | gpg --batch --import
+          printf '%s' "$SIGNING_PASSPHRASE" |
+            gpg --batch --pinentry-mode loopback --passphrase-fd 0 \
+              --armor --detach-sign \
+              --output dist/netbird-split/SHA256SUMS.asc \
+              dist/netbird-split/SHA256SUMS
+          gpg --verify dist/netbird-split/SHA256SUMS.asc dist/netbird-split/SHA256SUMS
+
+      # TODO(M17): SBOM and provenance are intentionally not produced yet. When
+      # a protected release environment and pinned generators are agreed, add:
+      #   syft dir:dist/netbird-split -o spdx-json=dist/netbird-split/sbom.spdx.json
+      #   actions/attest-build-provenance or slsa-github-generator with
+      #   id-token: write and permissions limited to the protected job.
+      # Neither may run on pull_request, and neither may publish to an upstream
+      # repository. No signature or attestation is faked in this workflow.
+
+      - name: Upload packages
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          name: netbird-split-packages
+          path: dist/netbird-split/
+          retention-days: 14

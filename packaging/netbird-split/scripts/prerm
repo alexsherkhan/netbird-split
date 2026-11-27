@@ -1,0 +1,84 @@
+#!/bin/sh
+set -eu
+
+NB_SPLIT_TEST_MODE="${NETBIRD_SPLIT_TEST_MODE:-0}"
+NB_SPLIT_ROOT=""
+if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+    if [ -n "${DPKG_MAINTSCRIPT_PACKAGE:-}" ]; then
+        echo "netbird-split: refusing test mode while dpkg runs a maintainer script" >&2
+        exit 1
+    fi
+    NB_SPLIT_ROOT="${NETBIRD_SPLIT_TEST_ROOT:-}"
+    case "$NB_SPLIT_ROOT" in
+        /tmp/* | /var/tmp/*) ;;
+        *)
+            echo "netbird-split: NETBIRD_SPLIT_TEST_ROOT must be under /tmp or /var/tmp" >&2
+            exit 1
+            ;;
+    esac
+fi
+
+split_path() {
+    printf '%s%s' "$NB_SPLIT_ROOT" "$1"
+}
+
+action_log="$(split_path /var/log/netbird-split-package-actions.log)"
+
+record_action() {
+    if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+        mkdir -p "$(dirname "$action_log")"
+        printf '%s\n' "$*" >> "$action_log"
+    fi
+}
+
+clean_kernel_state() {
+    split_bin="$(split_path /usr/bin/netbird-split)"
+    socket="$(split_path /run/netbird-split/netbird-split.sock)"
+    if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+        if [ -x "$split_bin" ]; then
+            "$split_bin" down --daemon-addr "unix://$socket" >/dev/null 2>&1 || true
+        fi
+        return 0
+    fi
+    if [ -x "$split_bin" ] && [ -S "$socket" ]; then
+        "$split_bin" down --daemon-addr "unix://$socket" >/dev/null 2>&1 || true
+    fi
+}
+
+stop_unit() {
+    if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+        record_action "systemctl stop netbird-split.service"
+        return 0
+    fi
+    if command -v deb-systemd-invoke >/dev/null 2>&1; then
+        deb-systemd-invoke stop netbird-split.service >/dev/null 2>&1 || true
+    elif command -v systemctl >/dev/null 2>&1; then
+        systemctl stop netbird-split.service >/dev/null 2>&1 || true
+    fi
+}
+
+disable_unit() {
+    if [ "$NB_SPLIT_TEST_MODE" = "1" ]; then
+        record_action "systemctl disable netbird-split.service"
+        return 0
+    fi
+    if command -v deb-systemd-helper >/dev/null 2>&1; then
+        deb-systemd-helper disable netbird-split.service >/dev/null 2>&1 || true
+    elif command -v systemctl >/dev/null 2>&1; then
+        systemctl disable netbird-split.service >/dev/null 2>&1 || true
+    fi
+}
+
+case "${1:-}" in
+    remove | deconfigure)
+        clean_kernel_state
+        stop_unit
+        disable_unit
+        ;;
+    upgrade)
+        # The running daemon keeps its executable while dpkg unpacks the new
+        # binary; postinst restarts it only if it was active.
+        ;;
+esac
+
+exit 0
