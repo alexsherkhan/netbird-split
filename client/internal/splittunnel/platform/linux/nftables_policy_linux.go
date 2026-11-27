@@ -254,6 +254,96 @@ func (m *nftablesManager) ApplyKillSwitch(
 	return nil
 }
 
+// VerifyPolicy confirms the observable kernel state matches the intended
+// policy: owned chains and sets are present, every rule is owned, and the
+// classification and kill switch rule counts match. A foreign object makes the
+// verification fail instead of being removed.
+func (m *nftablesManager) VerifyPolicy(ctx context.Context, policy nftPolicy) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	table, found, err := m.findTable()
+	if err != nil {
+		return err
+	}
+	if !found {
+		return fmt.Errorf("owned table %q is missing", m.tableName)
+	}
+	m.table = table
+
+	chains, err := m.chainsInTable()
+	if err != nil {
+		return err
+	}
+	if err := verifyExistingChains(chains); err != nil {
+		return err
+	}
+	rules, err := m.rulesByChain(chains)
+	if err != nil {
+		return err
+	}
+	if err := m.verifySets(); err != nil {
+		return err
+	}
+	if _, err := m.ownedSets(); err != nil {
+		return err
+	}
+
+	if got, want := len(rules[string(chainClassifyOutput)]), len(policy.rules); got != want {
+		return fmt.Errorf("owned classification rules %d, want %d", got, want)
+	}
+	if got, want := len(rules[string(chainKillswitch)]), len(policy.killswitch); got != want {
+		return fmt.Errorf("owned kill switch rules %d, want %d", got, want)
+	}
+	return nil
+}
+
+// Inspect reports only the owned nftables state. It refuses to continue when
+// the owned table contains a foreign chain, set or rule.
+func (m *nftablesManager) Inspect(ctx context.Context) (nftObservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nftObservation{}, err
+	}
+	table, found, err := m.findTable()
+	if err != nil {
+		return nftObservation{}, err
+	}
+	if !found {
+		return nftObservation{}, nil
+	}
+	m.table = table
+
+	chains, err := m.chainsInTable()
+	if err != nil {
+		return nftObservation{}, err
+	}
+	if err := verifyExistingChains(chains); err != nil {
+		return nftObservation{}, err
+	}
+	rules, err := m.rulesByChain(chains)
+	if err != nil {
+		return nftObservation{}, err
+	}
+	sets, err := m.conn.GetSets(table)
+	if err != nil {
+		return nftObservation{}, fmt.Errorf("list nftables sets: %w", err)
+	}
+	if err := verifyExistingSets(sets, table); err != nil {
+		return nftObservation{}, err
+	}
+
+	observation := nftObservation{TablePresent: true}
+	for _, chain := range chains {
+		observation.Chains = append(observation.Chains, chain.Name)
+	}
+	for _, set := range sets {
+		observation.Sets = append(observation.Sets, set.Name)
+	}
+	observation.ClassifyRules = len(rules[string(chainClassifyOutput)])
+	observation.KillSwitchRules = len(rules[string(chainKillswitch)])
+	return observation, nil
+}
+
 func (m *nftablesManager) ClearPolicy(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err

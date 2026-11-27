@@ -92,11 +92,12 @@ func startM04Backend(t *testing.T) *Backend {
 	t.Helper()
 
 	table := fmt.Sprintf("netbird_split_m04_%d", os.Getpid())
-	b := newBackend(
+	b := newBackendWith(
 		systemProber{},
 		func(table string) (nftManager, error) {
 			return newNFTablesManager(table)
 		},
+		newNetlinkRouter(),
 		table,
 	)
 	require.NoError(t, b.Initialize(context.Background()))

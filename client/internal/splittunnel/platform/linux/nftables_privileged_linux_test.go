@@ -156,11 +156,12 @@ func TestBackendLifecycleInContainer(t *testing.T) {
 		removeTable(t, tableName)
 	})
 
-	backendInstance := newBackend(
+	backendInstance := newBackendWith(
 		systemProber{},
 		func(table string) (nftManager, error) {
 			return newNFTablesManager(table)
 		},
+		newNetlinkRouter(),
 		tableName,
 	)
 	ctx := context.Background()

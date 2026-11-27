@@ -39,15 +39,17 @@ func TestBackendApplyPolicyInstallsAndRollsBack(t *testing.T) {
 	assert.True(t, status.PolicyApplied)
 	assert.Equal(t, 1, manager.applyCalls)
 	assert.Equal(t, 1, router.applyCalls)
-	assert.Equal(t, 1, manager.clearCalls, "apply must clear stale policy first")
-	assert.Equal(t, 1, router.removeCalls, "apply must remove stale routes first")
+	assert.Equal(t, 1, router.removeUnusedCalls,
+		"a staged apply removes stale classes only after the new state is verified")
+	assert.Zero(t, manager.clearCalls, "a staged apply must not clear protection before installing the new state")
+	assert.Zero(t, router.removeCalls, "a staged apply must not remove routes before installing the new state")
 
 	require.NoError(t, b.Rollback(context.Background()))
 	status, err = b.GetStatus(context.Background())
 	require.NoError(t, err)
 	assert.False(t, status.PolicyApplied)
-	assert.Equal(t, 2, manager.clearCalls)
-	assert.Equal(t, 2, router.removeCalls)
+	assert.Equal(t, 1, manager.clearCalls)
+	assert.Equal(t, 1, router.removeCalls)
 }
 
 func TestBackendApplyPolicySkipsIPv6WithoutHostSupport(t *testing.T) {
@@ -107,7 +109,8 @@ func TestBackendApplyPolicyReconcilesWithStableAllocations(t *testing.T) {
 	second := allocationSnapshot(router.plans[1])
 	assert.Equal(t, first, second, "repeated applies must reuse allocated primitives")
 	assert.Equal(t, 2, manager.applyCalls)
-	assert.Equal(t, 2, manager.clearCalls)
+	assert.Zero(t, manager.clearCalls, "a staged apply preserves the previous guard until the new state is verified")
+	assert.Equal(t, 2, router.removeUnusedCalls)
 }
 
 func allocationSnapshot(plan routePlan) map[routeClass]classAllocation {
@@ -174,7 +177,7 @@ func TestBackendApplyPolicyNFTFailureRollsBackRoutes(t *testing.T) {
 	err := b.ApplyPolicy(context.Background(), compiled, testOptions())
 	require.ErrorIs(t, err, applyErr)
 	assert.Equal(t, 1, manager.applyCalls)
-	assert.GreaterOrEqual(t, router.removeCalls, 2,
+	assert.GreaterOrEqual(t, router.removeCalls, 1,
 		"a failed nftables install must remove the routes it prepared")
 
 	status, err := b.GetStatus(context.Background())
