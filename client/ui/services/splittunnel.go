@@ -546,7 +546,7 @@ func splitTunnelErrorInfo(st *status.Status) (*errdetails.ErrorInfo, bool) {
 }
 
 func (s *SplitTunnel) classifyReason(st *status.Status, info *errdetails.ErrorInfo) *ClientError {
-	code := ""
+	var code string
 	switch info.GetReason() {
 	case api.ReasonRevisionConflict:
 		code = "split_tunnel_revision_conflict"
