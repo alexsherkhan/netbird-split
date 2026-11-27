@@ -37,11 +37,11 @@ func TestNFTablesManagerLifecycleInContainer(t *testing.T) {
 
 	table := requireInetTable(t, tableName)
 	assert.Len(t, chainsInTable(t, tableName), 4, "only the four owned chains must exist")
-	assert.Len(t, setsInTable(t, table), 8, "only the eight owned sets must exist")
+	assert.Len(t, setsInTable(t, table), 9, "only the nine owned sets must exist")
 
 	require.NoError(t, manager.Ensure(context.Background()))
 	assert.Len(t, chainsInTable(t, tableName), 4, "a repeated Ensure must not duplicate chains")
-	assert.Len(t, setsInTable(t, table), 8, "a repeated Ensure must not duplicate sets")
+	assert.Len(t, setsInTable(t, table), 9, "a repeated Ensure must not duplicate sets")
 
 	createForeignTable(t, foreignTableName)
 
@@ -173,7 +173,7 @@ func TestBackendLifecycleInContainer(t *testing.T) {
 	assert.NotEmpty(t, status.Owned.Chains)
 	assert.NotEmpty(t, status.Owned.Sets)
 
-	require.ErrorIs(t, backendInstance.ApplyPolicy(ctx, nil), backend.ErrNotImplemented)
+	require.ErrorIs(t, backendInstance.ApplyPolicy(ctx, nil, backend.PolicyOptions{}), backend.ErrInvalidPolicyOption)
 	require.NoError(t, backendInstance.Rollback(ctx))
 
 	require.NoError(t, backendInstance.Close(ctx))

@@ -34,7 +34,132 @@ var (
 	// ErrObjectMismatch reports an owned object whose definition differs from
 	// the current backend version. The backend refuses to mutate it.
 	ErrObjectMismatch = errors.New("owned object does not match its expected definition")
+	// ErrUnsupportedCondition reports a policy condition the backend cannot
+	// enforce yet. The backend rejects the whole policy instead of silently
+	// ignoring the condition.
+	ErrUnsupportedCondition = errors.New("unsupported split tunnel condition")
+	// ErrIPv6Unsupported reports an IPv6 policy or target. IPv6 enforcement is
+	// a later milestone, and accepting it would claim coverage that does not
+	// exist.
+	ErrIPv6Unsupported = errors.New("IPv6 split tunnel routing is not supported")
+	// ErrExitNodeUnavailable reports an exit node that is not the single
+	// authorized active exit node. Protected traffic must not fall back to
+	// another path.
+	ErrExitNodeUnavailable = errors.New("exit node is unavailable")
+	// ErrInvalidPolicyOption reports a missing or malformed runtime route
+	// target needed to enforce a compiled policy.
+	ErrInvalidPolicyOption = errors.New("invalid split tunnel policy option")
 )
+
+// UnsupportedConditionError names the condition that a backend cannot enforce.
+type UnsupportedConditionError struct {
+	Condition config.ConditionType
+	Reason    string
+	IPv6      bool
+}
+
+// Error implements error.
+func (e *UnsupportedConditionError) Error() string {
+	reason := e.Reason
+	if reason == "" {
+		reason = "not implemented"
+	}
+	return fmt.Sprintf("condition %q: %s: %v", e.Condition, reason, ErrUnsupportedCondition)
+}
+
+// Unwrap reports the sentinel errors this condition matches.
+func (e *UnsupportedConditionError) Unwrap() []error {
+	if e.IPv6 {
+		return []error{ErrUnsupportedCondition, ErrIPv6Unsupported}
+	}
+	return []error{ErrUnsupportedCondition}
+}
+
+// ExitNodeUnavailableError names the requested and active exit node IDs.
+type ExitNodeUnavailableError struct {
+	Requested config.ExitNodeID
+	Active    config.ExitNodeID
+}
+
+// Error implements error.
+func (e *ExitNodeUnavailableError) Error() string {
+	return fmt.Sprintf("exit node %q is not the active exit node %q: %v",
+		e.Requested, e.Active, ErrExitNodeUnavailable)
+}
+
+// Unwrap reports the sentinel exit-node-unavailable error.
+func (e *ExitNodeUnavailableError) Unwrap() error {
+	return ErrExitNodeUnavailable
+}
+
+// RouteTarget is a typed IPv4 egress path a backend uses for one traffic
+// class. Interface is required. Gateway is empty for a link-scope route such as
+// a point-to-point overlay interface. Source selects the preferred source
+// address for the installed default route.
+type RouteTarget struct {
+	Interface string
+	Gateway   netip.Addr
+	Source    netip.Addr
+}
+
+// Validate checks that the target can be installed as an IPv4 route.
+func (t RouteTarget) Validate() error {
+	if t.Interface == "" {
+		return errors.New("interface is empty")
+	}
+	if err := validateTargetAddr(t.Gateway, "gateway"); err != nil {
+		return err
+	}
+	if err := validateTargetAddr(t.Source, "source"); err != nil {
+		return err
+	}
+	return nil
+}
+
+func validateTargetAddr(addr netip.Addr, field string) error {
+	if !addr.IsValid() {
+		return nil
+	}
+	if addr.Is4In6() {
+		return fmt.Errorf("%s must use a plain IPv4 address", field)
+	}
+	if !addr.Is4() {
+		return fmt.Errorf("%s: %w", field, ErrIPv6Unsupported)
+	}
+	if addr.Zone() != "" {
+		return fmt.Errorf("%s must not contain a zone", field)
+	}
+	return nil
+}
+
+// ExitNode is the single authorized exit node a policy may use. Rules that
+// target this ID route through Target; rules that target another ID are
+// rejected so protected traffic never falls back to an unauthorized path.
+type ExitNode struct {
+	ID     config.ExitNodeID
+	Target RouteTarget
+}
+
+// Validate checks the exit node identity and target.
+func (e ExitNode) Validate() error {
+	if e.ID == "" {
+		return errors.New("exit node ID is empty")
+	}
+	if err := e.Target.Validate(); err != nil {
+		return fmt.Errorf("exit node %q target: %w", e.ID, err)
+	}
+	return nil
+}
+
+// PolicyOptions are the runtime egress targets a backend needs to enforce an
+// IPv4 compiled policy. VPN and Direct are only required when the policy uses
+// those actions. ExitNode may be nil when no exit node is authorized; exit
+// rules are then installed fail-closed.
+type PolicyOptions struct {
+	VPN      RouteTarget
+	Direct   RouteTarget
+	ExitNode *ExitNode
+}
 
 // State is the lifecycle state of a network backend.
 type State string
@@ -301,9 +426,10 @@ func (u DomainSetUpdate) Validate() error {
 type NetworkBackend interface {
 	// Initialize probes capabilities and creates the backend's owned objects.
 	Initialize(ctx context.Context) error
-	// ApplyPolicy installs a compiled policy. It returns ErrNotImplemented
-	// until the backend supports policy enforcement.
-	ApplyPolicy(ctx context.Context, compiled *policy.CompiledPolicy) error
+	// ApplyPolicy installs a compiled policy using the runtime route targets in
+	// options. It replaces any previously applied policy and must never report
+	// success without changing kernel state.
+	ApplyPolicy(ctx context.Context, compiled *policy.CompiledPolicy, options PolicyOptions) error
 	// UpdateDomainSets replaces resolved domain addresses in the owned timeout
 	// sets. It returns ErrNotImplemented until DNS tracking lands.
 	UpdateDomainSets(ctx context.Context, updates []DomainSetUpdate) error

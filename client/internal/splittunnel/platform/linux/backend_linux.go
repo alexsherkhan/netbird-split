@@ -3,9 +3,11 @@
 // Package linux implements the Linux split tunnel network backend.
 //
 // The backend owns one dedicated nftables table, allocates policy routing
-// primitives that do not collide with upstream NetBird, and exposes a netlink
-// monitor skeleton for later route reconciliation. M03 does not install
-// routes, classify traffic or enforce a kill switch.
+// primitives that do not collide with upstream NetBird, and applies IPv4
+// include, exclude and custom policies. It installs only owned nftables rules
+// tagged with the backend marker and only routes and policy rules allocated
+// from the split ranges. IPv6, DNS tracking, application classification, kill
+// switch modes and crash recovery are later milestones.
 package linux
 
 import (
@@ -15,6 +17,9 @@ import (
 	"sync"
 	"time"
 
+	"github.com/hashicorp/go-multierror"
+
+	nberrors "github.com/netbirdio/netbird/client/errors"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/policy"
 )
@@ -37,6 +42,8 @@ type nftManager interface {
 	Cleanup(ctx context.Context) error
 	CreatedTable() bool
 	Owned() backend.OwnedObjects
+	ApplyPolicy(ctx context.Context, policy nftPolicy) error
+	ClearPolicy(ctx context.Context) error
 }
 
 // Backend is the Linux implementation of backend.NetworkBackend.
@@ -46,10 +53,13 @@ type Backend struct {
 	tableName    string
 	probe        capabilityProber
 	openNFTables func(table string) (nftManager, error)
+	router       routeManager
 
 	state         backend.State
 	capabilities  backend.Capabilities
 	nft           nftManager
+	allocations   allocations
+	allocated     bool
 	initialized   bool
 	cleanupDone   bool
 	closed        bool
@@ -72,10 +82,20 @@ func New() *Backend {
 }
 
 func newBackend(probe capabilityProber, openNFTables func(string) (nftManager, error), table string) *Backend {
+	return newBackendWith(probe, openNFTables, newNetlinkRouter(), table)
+}
+
+func newBackendWith(
+	probe capabilityProber,
+	openNFTables func(string) (nftManager, error),
+	router routeManager,
+	table string,
+) *Backend {
 	return &Backend{
 		tableName:    table,
 		probe:        probe,
 		openNFTables: openNFTables,
+		router:       router,
 		state:        backend.StateUninitialized,
 		updatedAt:    time.Now().UTC(),
 		capabilities: backend.Capabilities{},
@@ -146,8 +166,16 @@ func (b *Backend) Initialize(ctx context.Context) error {
 	return nil
 }
 
-// ApplyPolicy is reserved for M04 and currently fails with ErrNotImplemented.
-func (b *Backend) ApplyPolicy(ctx context.Context, compiled *policy.CompiledPolicy) error {
+// ApplyPolicy replaces the applied IPv4 policy. A disabled policy, or a
+// policy with no rules, only clears previously applied state. Conditions and
+// targets the milestone cannot enforce are rejected before any kernel state is
+// touched. A protected class whose target is absent is installed with an
+// unreachable default instead of falling back to the physical path.
+func (b *Backend) ApplyPolicy(
+	ctx context.Context,
+	compiled *policy.CompiledPolicy,
+	options backend.PolicyOptions,
+) error {
 	if err := ctx.Err(); err != nil {
 		return err
 	}
@@ -161,9 +189,42 @@ func (b *Backend) ApplyPolicy(ctx context.Context, compiled *policy.CompiledPoli
 	if !b.initialized {
 		return backend.ErrNotInitialized
 	}
+	if err := b.ensureAllocationsLocked(); err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("allocate split policy routing primitives: %w", err)
+	}
 
-	_ = compiled
-	return &backend.NotImplementedError{Operation: "apply policy"}
+	plan, err := compilePolicy(compiled, options, b.allocations)
+	if err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("compile IPv4 policy: %w", err)
+	}
+
+	if err := b.rollbackPolicyLocked(ctx); err != nil {
+		b.recordErrorLocked(err)
+		return err
+	}
+	if !compiled.Enabled {
+		b.lastError = ""
+		b.updatedAt = time.Now().UTC()
+		return nil
+	}
+
+	if err := b.router.Apply(ctx, plan.route); err != nil {
+		_ = b.router.Remove(ctx, b.allocations)
+		b.recordErrorLocked(err)
+		return fmt.Errorf("apply policy routing: %w", err)
+	}
+	if err := b.nft.ApplyPolicy(ctx, plan.nft); err != nil {
+		_ = b.router.Remove(ctx, b.allocations)
+		b.recordErrorLocked(err)
+		return fmt.Errorf("apply nftables policy: %w", err)
+	}
+
+	b.policyApplied = true
+	b.lastError = ""
+	b.updatedAt = time.Now().UTC()
+	return nil
 }
 
 // UpdateDomainSets is reserved for M08 and currently fails with
@@ -237,8 +298,8 @@ func (b *Backend) GetStatus(ctx context.Context) (backend.Status, error) {
 	}, nil
 }
 
-// Rollback discards applied policy state without removing baseline objects.
-// M03 never applies policy, so it only clears the applied flag.
+// Rollback removes applied policy rules, routes and classification rules
+// without removing the baseline table, chains or sets.
 func (b *Backend) Rollback(ctx context.Context) error {
 	if err := ctx.Err(); err != nil {
 		return err
@@ -254,8 +315,50 @@ func (b *Backend) Rollback(ctx context.Context) error {
 		return nil
 	}
 
-	b.policyApplied = false
+	if err := b.rollbackPolicyLocked(ctx); err != nil {
+		b.recordErrorLocked(err)
+		return err
+	}
+	b.lastError = ""
 	return nil
+}
+
+func (b *Backend) rollbackPolicyLocked(ctx context.Context) error {
+	var merr *multierror.Error
+
+	if b.nft != nil {
+		if err := b.nft.ClearPolicy(ctx); err != nil {
+			// Keep routes and policy rules in place if classification could
+			// not be removed, so protected traffic cannot leak.
+			return fmt.Errorf("clear nftables policy: %w", err)
+		}
+	}
+	if b.allocated && b.router != nil {
+		if err := b.router.Remove(ctx, b.allocations); err != nil {
+			merr = multierror.Append(merr, fmt.Errorf("remove policy routing: %w", err))
+		}
+	}
+
+	b.policyApplied = false
+	return nberrors.FormatErrorOrNil(merr)
+}
+
+func (b *Backend) ensureAllocationsLocked() error {
+	if b.allocated {
+		return nil
+	}
+	allocations, err := newAllocations()
+	if err != nil {
+		return err
+	}
+	b.allocations = allocations
+	b.allocated = true
+	return nil
+}
+
+func (b *Backend) recordErrorLocked(err error) {
+	b.lastError = err.Error()
+	b.updatedAt = time.Now().UTC()
 }
 
 // Cleanup removes the backend's owned objects. It is safe to call without a
@@ -296,6 +399,16 @@ func (b *Backend) Close(ctx context.Context) error {
 func (b *Backend) cleanupLocked(ctx context.Context) error {
 	if b.cleanupDone {
 		return nil
+	}
+
+	if err := b.ensureAllocationsLocked(); err != nil {
+		b.failLocked(err)
+		return err
+	}
+	if err := b.rollbackPolicyLocked(ctx); err != nil {
+		cleanupErr := fmt.Errorf("remove applied policy: %w", err)
+		b.failLocked(cleanupErr)
+		return cleanupErr
 	}
 
 	manager := b.nft

@@ -1,0 +1,355 @@
+//go:build linux && !android
+
+package linux
+
+import (
+	"context"
+	"encoding/binary"
+	"errors"
+	"fmt"
+	"net"
+	"net/netip"
+
+	"github.com/google/nftables"
+	"github.com/google/nftables/binaryutil"
+	"github.com/google/nftables/expr"
+	"golang.org/x/sys/unix"
+
+	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
+)
+
+// nftPolicy is the nftables half of a compiled IPv4 policy. It is deliberately
+// logical rather than a list of raw netlink expressions so policy compilation
+// stays testable without a kernel.
+type nftPolicy struct {
+	sets  map[setName][]netip.Prefix
+	rules []nftRule
+}
+
+// nftRule is one ordered classification rule. All matches must hold, then the
+// mark is applied and the chain returns. Bypass rules return without changing
+// the mark.
+type nftRule struct {
+	matches []nftMatch
+	mark    uint32
+	bypass  bool
+}
+
+// nftMatch is one conjunctive match inside an nftRule.
+type nftMatch struct {
+	set      setName
+	prefix   netip.Prefix
+	protocol config.Protocol
+	port     uint16
+}
+
+func policySetNames() []setName {
+	return []setName{setVPN4, setDirect4, setBlocked4, setExit4}
+}
+
+func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.table == nil {
+		return errors.New("nftables table is not initialized")
+	}
+
+	chains, err := m.chainsInTable()
+	if err != nil {
+		return err
+	}
+	if err := verifyExistingChains(chains); err != nil {
+		return err
+	}
+	rules, err := m.rulesByChain(chains)
+	if err != nil {
+		return err
+	}
+	if err := m.verifySets(); err != nil {
+		return err
+	}
+
+	var classify *nftables.Chain
+	for _, chain := range chains {
+		if chain.Name == string(chainClassifyOutput) {
+			classify = chain
+			break
+		}
+	}
+	if classify == nil {
+		return fmt.Errorf("owned chain %q is missing", chainClassifyOutput)
+	}
+
+	sets, err := m.policySets()
+	if err != nil {
+		return err
+	}
+
+	for _, chainRules := range rules {
+		for _, rule := range chainRules {
+			if err := m.conn.DelRule(rule); err != nil {
+				return fmt.Errorf("delete owned rule %d: %w", rule.Handle, err)
+			}
+		}
+	}
+	for _, name := range policySetNames() {
+		m.conn.FlushSet(sets[name])
+	}
+	for _, name := range policySetNames() {
+		prefixes := policy.sets[name]
+		if len(prefixes) == 0 {
+			continue
+		}
+		if err := m.conn.SetAddElements(sets[name], prefixSetElements(prefixes)); err != nil {
+			return fmt.Errorf("add prefixes to set %q: %w", name, err)
+		}
+	}
+	for i := range policy.rules {
+		exprs, err := nftRuleExprs(policy.rules[i], sets)
+		if err != nil {
+			return err
+		}
+		m.conn.AddRule(&nftables.Rule{
+			Table:    m.table,
+			Chain:    classify,
+			Exprs:    exprs,
+			UserData: ownedRuleUserData,
+		})
+	}
+
+	if err := m.conn.Flush(); err != nil {
+		return fmt.Errorf("apply owned nftables policy: %w", err)
+	}
+	return nil
+}
+
+func (m *nftablesManager) ClearPolicy(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if m.table == nil {
+		table, found, err := m.findTable()
+		if err != nil {
+			return err
+		}
+		if !found {
+			return nil
+		}
+		m.table = table
+	}
+
+	chains, err := m.chainsInTable()
+	if err != nil {
+		return err
+	}
+	if err := verifyExistingChains(chains); err != nil {
+		return err
+	}
+	rules, err := m.rulesByChain(chains)
+	if err != nil {
+		return err
+	}
+	if err := m.verifySets(); err != nil {
+		return err
+	}
+
+	sets, err := m.policySets()
+	if err != nil {
+		return err
+	}
+
+	for _, chainRules := range rules {
+		for _, rule := range chainRules {
+			if err := m.conn.DelRule(rule); err != nil {
+				return fmt.Errorf("delete owned rule %d: %w", rule.Handle, err)
+			}
+		}
+	}
+	for _, name := range policySetNames() {
+		m.conn.FlushSet(sets[name])
+	}
+
+	if err := m.conn.Flush(); err != nil {
+		return fmt.Errorf("clear owned nftables policy: %w", err)
+	}
+	return nil
+}
+
+func (m *nftablesManager) verifySets() error {
+	sets, err := m.conn.GetSets(m.table)
+	if err != nil {
+		return fmt.Errorf("list nftables sets: %w", err)
+	}
+	return verifyExistingSets(sets, m.table)
+}
+
+func (m *nftablesManager) policySets() (map[setName]*nftables.Set, error) {
+	sets, err := m.conn.GetSets(m.table)
+	if err != nil {
+		return nil, fmt.Errorf("list nftables sets: %w", err)
+	}
+
+	owned := make(map[setName]*nftables.Set, len(policySetNames()))
+	for _, set := range sets {
+		name := setName(set.Name)
+		for _, wanted := range policySetNames() {
+			if name == wanted {
+				owned[wanted] = set
+			}
+		}
+	}
+	for _, name := range policySetNames() {
+		if owned[name] == nil {
+			return nil, fmt.Errorf("owned set %q is missing", name)
+		}
+	}
+	return owned, nil
+}
+
+func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, error) {
+	// An inet table sees IPv6 too. Restrict every rule to IPv4 so this
+	// milestone leaves IPv6 traffic completely untouched.
+	exprs := []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(unix.NFPROTO_IPV4),
+		},
+		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+	}
+
+	for _, match := range rule.matches {
+		switch {
+		case match.set != "":
+			set := sets[match.set]
+			if set == nil {
+				return nil, fmt.Errorf("owned set %q is missing", match.set)
+			}
+			exprs = append(exprs,
+				&expr.Payload{
+					DestRegister: 1,
+					Base:         expr.PayloadBaseNetworkHeader,
+					Offset:       ipv4DestinationOffset,
+					Len:          ipv4AddressLength,
+				},
+				&expr.Lookup{SourceRegister: 1, SetID: set.ID, SetName: set.Name},
+			)
+		case match.prefix.IsValid():
+			exprs = append(exprs, ipv4PrefixExprs(match.prefix)...)
+		}
+
+		if match.protocol != "" {
+			protocolExprs, err := protocolPortExprs(match.protocol, match.port)
+			if err != nil {
+				return nil, err
+			}
+			exprs = append(exprs, protocolExprs...)
+		}
+	}
+
+	if rule.bypass {
+		exprs = append(exprs, &expr.Verdict{Kind: expr.VerdictReturn})
+		return exprs, nil
+	}
+
+	exprs = append(exprs,
+		&expr.Immediate{Register: 1, Data: binaryutil.NativeEndian.PutUint32(rule.mark)},
+		&expr.Meta{Key: expr.MetaKeyMARK, SourceRegister: true, Register: 1},
+		&expr.Verdict{Kind: expr.VerdictReturn},
+	)
+	return exprs, nil
+}
+
+const (
+	ipv4AddressLength       = 4
+	ipv4DestinationOffset   = 16
+	ipv4TransportPortOffset = 2
+)
+
+func ipv4PrefixExprs(prefix netip.Prefix) []expr.Any {
+	addr := prefix.Masked().Addr()
+	payload := &expr.Payload{
+		DestRegister: 1,
+		Base:         expr.PayloadBaseNetworkHeader,
+		Offset:       ipv4DestinationOffset,
+		Len:          ipv4AddressLength,
+	}
+	if prefix.Bits() == 32 {
+		return []expr.Any{
+			payload,
+			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.AsSlice()},
+		}
+	}
+
+	return []expr.Any{
+		payload,
+		&expr.Bitwise{
+			DestRegister:   1,
+			SourceRegister: 1,
+			Len:            ipv4AddressLength,
+			Mask:           net.CIDRMask(prefix.Bits(), 32),
+			Xor:            make([]byte, ipv4AddressLength),
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.AsSlice()},
+	}
+}
+
+func protocolPortExprs(protocol config.Protocol, port uint16) ([]expr.Any, error) {
+	var number byte
+	switch protocol {
+	case config.ProtocolTCP:
+		number = unix.IPPROTO_TCP
+	case config.ProtocolUDP:
+		number = unix.IPPROTO_UDP
+	default:
+		return nil, fmt.Errorf("unsupported protocol %q", protocol)
+	}
+	if port == 0 {
+		return nil, errors.New("protocol port must not be zero")
+	}
+
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyL4PROTO, Register: 1},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: []byte{number}},
+		&expr.Payload{
+			DestRegister: 1,
+			Base:         expr.PayloadBaseTransportHeader,
+			Offset:       ipv4TransportPortOffset,
+			Len:          2,
+		},
+		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.BigEndian.PutUint16(port)},
+	}, nil
+}
+
+func prefixSetElements(prefixes []netip.Prefix) []nftables.SetElement {
+	elements := make([]nftables.SetElement, 0, len(prefixes)*2)
+	for _, prefix := range prefixes {
+		prefix = prefix.Masked()
+		first := prefix.Addr()
+		last := prefixLastKey(prefix)
+		elements = append(elements,
+			nftables.SetElement{Key: first.AsSlice()},
+			nftables.SetElement{Key: last, IntervalEnd: true},
+		)
+	}
+	return elements
+}
+
+func prefixLastKey(prefix netip.Prefix) []byte {
+	if prefix.Bits() == 0 {
+		return make([]byte, ipv4AddressLength)
+	}
+
+	addr := prefix.Masked().Addr()
+	hostMask := ^uint32(0) >> prefix.Bits()
+	last := binary.BigEndian.Uint32(addr.AsSlice()) | hostMask
+	next := last + 1
+	if next < last {
+		return make([]byte, ipv4AddressLength)
+	}
+	return binaryutil.BigEndian.PutUint32(next)
+}
