@@ -4,7 +4,6 @@ package linux
 
 import (
 	"context"
-	"encoding/binary"
 	"errors"
 	"fmt"
 	"net"
@@ -18,7 +17,30 @@ import (
 	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
 )
 
-// nftPolicy is the nftables half of a compiled IPv4 policy. It is deliberately
+// nftFamily is the address family a classification rule matches. The inet
+// table sees both families, so every rule carries an explicit family guard.
+type nftFamily uint8
+
+const (
+	family4 nftFamily = iota
+	family6
+)
+
+func (f nftFamily) nfproto() uint32 {
+	if f == family6 {
+		return unix.NFPROTO_IPV6
+	}
+	return unix.NFPROTO_IPV4
+}
+
+func (f nftFamily) String() string {
+	if f == family6 {
+		return "IPv6"
+	}
+	return "IPv4"
+}
+
+// nftPolicy is the nftables half of a compiled policy. It is deliberately
 // logical rather than a list of raw netlink expressions so policy compilation
 // stays testable without a kernel.
 type nftPolicy struct {
@@ -30,6 +52,7 @@ type nftPolicy struct {
 // mark is applied and the chain returns. Bypass rules return without changing
 // the mark.
 type nftRule struct {
+	family  nftFamily
 	matches []nftMatch
 	mark    uint32
 	bypass  bool
@@ -44,7 +67,10 @@ type nftMatch struct {
 }
 
 func policySetNames() []setName {
-	return []setName{setVPN4, setDirect4, setBlocked4, setExit4}
+	return []setName{
+		setVPN4, setDirect4, setBlocked4, setExit4,
+		setVPN6, setDirect6, setBlocked6, setExit6,
+	}
 }
 
 func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) error {
@@ -209,14 +235,14 @@ func (m *nftablesManager) policySets() (map[setName]*nftables.Set, error) {
 }
 
 func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, error) {
-	// An inet table sees IPv6 too. Restrict every rule to IPv4 so this
-	// milestone leaves IPv6 traffic completely untouched.
+	// An inet table sees both families, so every rule has to state which one it
+	// applies to. Without the guard an IPv4 rule would also match IPv6 traffic.
 	exprs := []expr.Any{
 		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
 		&expr.Cmp{
 			Op:       expr.CmpOpEq,
 			Register: 1,
-			Data:     binaryutil.NativeEndian.PutUint32(unix.NFPROTO_IPV4),
+			Data:     binaryutil.NativeEndian.PutUint32(rule.family.nfproto()),
 		},
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
@@ -229,17 +255,25 @@ func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, err
 			if set == nil {
 				return nil, fmt.Errorf("owned set %q is missing", match.set)
 			}
+			if setFamily(match.set) != rule.family {
+				return nil, fmt.Errorf("set %q does not belong to %v rules",
+					match.set, rule.family)
+			}
 			exprs = append(exprs,
 				&expr.Payload{
 					DestRegister: 1,
 					Base:         expr.PayloadBaseNetworkHeader,
-					Offset:       ipv4DestinationOffset,
-					Len:          ipv4AddressLength,
+					Offset:       destinationOffset(rule.family),
+					Len:          addressLength(rule.family),
 				},
 				&expr.Lookup{SourceRegister: 1, SetID: set.ID, SetName: set.Name},
 			)
 		case match.prefix.IsValid():
-			exprs = append(exprs, ipv4PrefixExprs(match.prefix)...)
+			if familyOfPrefix(match.prefix) != rule.family {
+				return nil, fmt.Errorf("prefix %s does not belong to %v rules",
+					match.prefix, rule.family)
+			}
+			exprs = append(exprs, prefixExprs(match.prefix)...)
 		}
 
 		if match.protocol != "" {
@@ -267,18 +301,60 @@ func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, err
 const (
 	ipv4AddressLength       = 4
 	ipv4DestinationOffset   = 16
+	ipv6AddressLength       = 16
+	ipv6DestinationOffset   = 24
 	ipv4TransportPortOffset = 2
 )
 
+func setFamily(name setName) nftFamily {
+	switch name {
+	case setVPN6, setDirect6, setBlocked6, setExit6:
+		return family6
+	default:
+		return family4
+	}
+}
+
+func addressLength(family nftFamily) uint32 {
+	if family == family6 {
+		return ipv6AddressLength
+	}
+	return ipv4AddressLength
+}
+
+func destinationOffset(family nftFamily) uint32 {
+	if family == family6 {
+		return ipv6DestinationOffset
+	}
+	return ipv4DestinationOffset
+}
+
+func prefixExprs(prefix netip.Prefix) []expr.Any {
+	if familyOfPrefix(prefix) == family6 {
+		return ipv6PrefixExprs(prefix)
+	}
+	return ipv4PrefixExprs(prefix)
+}
+
 func ipv4PrefixExprs(prefix netip.Prefix) []expr.Any {
+	return prefixExprsFor(prefix, family4)
+}
+
+func ipv6PrefixExprs(prefix netip.Prefix) []expr.Any {
+	return prefixExprsFor(prefix, family6)
+}
+
+func prefixExprsFor(prefix netip.Prefix, family nftFamily) []expr.Any {
 	addr := prefix.Masked().Addr()
+	length := addressLength(family)
 	payload := &expr.Payload{
 		DestRegister: 1,
 		Base:         expr.PayloadBaseNetworkHeader,
-		Offset:       ipv4DestinationOffset,
-		Len:          ipv4AddressLength,
+		Offset:       destinationOffset(family),
+		Len:          length,
 	}
-	if prefix.Bits() == 32 {
+	bits := addr.BitLen()
+	if prefix.Bits() == bits {
 		return []expr.Any{
 			payload,
 			&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.AsSlice()},
@@ -290,9 +366,9 @@ func ipv4PrefixExprs(prefix netip.Prefix) []expr.Any {
 		&expr.Bitwise{
 			DestRegister:   1,
 			SourceRegister: 1,
-			Len:            ipv4AddressLength,
-			Mask:           net.CIDRMask(prefix.Bits(), 32),
-			Xor:            make([]byte, ipv4AddressLength),
+			Len:            length,
+			Mask:           net.CIDRMask(prefix.Bits(), bits),
+			Xor:            make([]byte, length),
 		},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: addr.AsSlice()},
 	}
@@ -340,16 +416,21 @@ func prefixSetElements(prefixes []netip.Prefix) []nftables.SetElement {
 }
 
 func prefixLastKey(prefix netip.Prefix) []byte {
+	addr := prefix.Masked().Addr()
+	length := addr.BitLen() / 8
+	last := addr.AsSlice()
 	if prefix.Bits() == 0 {
-		return make([]byte, ipv4AddressLength)
+		return make([]byte, length)
 	}
 
-	addr := prefix.Masked().Addr()
-	hostMask := ^uint32(0) >> prefix.Bits()
-	last := binary.BigEndian.Uint32(addr.AsSlice()) | hostMask
-	next := last + 1
-	if next < last {
-		return make([]byte, ipv4AddressLength)
+	for bit := prefix.Bits(); bit < addr.BitLen(); bit++ {
+		last[bit/8] |= 1 << (7 - bit%8)
 	}
-	return binaryutil.BigEndian.PutUint32(next)
+	for i := len(last) - 1; i >= 0; i-- {
+		last[i]++
+		if last[i] != 0 {
+			return last
+		}
+	}
+	return make([]byte, length)
 }

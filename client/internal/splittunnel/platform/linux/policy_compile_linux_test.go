@@ -217,25 +217,22 @@ func TestCompilePolicyRejectsUnsupportedConditions(t *testing.T) {
 	}
 }
 
-func TestCompilePolicyRejectsIPv6(t *testing.T) {
-	t.Run("policy enables IPv6", func(t *testing.T) {
-		cfg := includeConfig(testRule("vpn", config.ActionVPN, cidrCondition("10.0.0.0/8")))
-		cfg.SplitTunnel.IPv6 = true
-		compiled := mustCompile(t, cfg)
+func TestCompilePolicyIPv6DisabledSkipsV6(t *testing.T) {
+	cfg := includeConfig(testRule("vpn6", config.ActionVPN, cidrCondition("2001:db8::/32")))
+	cfg.SplitTunnel.IPv6 = false
+	compiled := mustCompile(t, cfg)
 
-		_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
-		require.ErrorIs(t, err, backend.ErrIPv6Unsupported)
-	})
+	plan, err := compilePolicy(compiled, testOptions(), testAllocations(t))
+	require.NoError(t, err)
 
-	t.Run("IPv6 CIDR condition", func(t *testing.T) {
-		compiled := mustCompile(t, includeConfig(
-			testRule("vpn6", config.ActionVPN, cidrCondition("2001:db8::/32")),
-		))
+	assert.Empty(t, plan.nft.sets[setVPN6], "a disabled IPv6 policy must not fill IPv6 sets")
+	assert.Empty(t, plan.route.classes6, "a disabled IPv6 policy must not install v6 routes")
+	for _, rule := range plan.nft.rules {
+		assert.NotEqual(t, family6, rule.family, "a disabled IPv6 policy must not emit v6 rules")
+	}
 
-		_, err := compilePolicy(compiled, testOptions(), testAllocations(t))
-		require.ErrorIs(t, err, backend.ErrIPv6Unsupported)
-		require.ErrorIs(t, err, backend.ErrUnsupportedCondition)
-	})
+	last := plan.nft.rules[len(plan.nft.rules)-1]
+	assert.Equal(t, family4, last.family, "the IPv4 default rule must still be installed")
 }
 
 func TestCompilePolicyRejectsKillSwitchAndDNS(t *testing.T) {

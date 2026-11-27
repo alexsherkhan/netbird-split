@@ -17,6 +17,10 @@ var (
 	ErrAllocatorKeyEmpty = errors.New("allocator key is empty")
 )
 
+// One allocation key drives both families. Linux policy rules are family
+// scoped, so the same table ID, priority and mark cannot match traffic of the
+// other family, and the four priorities between 105 and 110 leave no room for
+// a second full key set.
 const (
 	splitTableBase  uint64 = 0x1BE0
 	splitTableSlots uint64 = 32
