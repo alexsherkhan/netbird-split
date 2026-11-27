@@ -150,6 +150,7 @@ func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) err
 		if err != nil {
 			return err
 		}
+		exprs = withClassificationCounter(policy.rules[i], exprs)
 		m.conn.AddRule(&nftables.Rule{
 			Table:    m.table,
 			Chain:    classify,

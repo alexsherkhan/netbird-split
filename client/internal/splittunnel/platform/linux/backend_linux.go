@@ -26,6 +26,7 @@ import (
 
 	nberrors "github.com/netbirdio/netbird/client/errors"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/diagnostics"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/policy"
 )
 
@@ -894,6 +895,57 @@ func (b *Backend) GetCapabilities(ctx context.Context) (backend.Capabilities, er
 		}
 	}
 	return capabilities.Clone(), nil
+}
+
+// TrafficCounters reads the owned classification counters for local
+// diagnostics. It never invents zero values: a missing backend state or a
+// manager without counter support returns an error.
+func (b *Backend) TrafficCounters(ctx context.Context) (diagnostics.CounterSample, error) {
+	if err := ctx.Err(); err != nil {
+		return diagnostics.CounterSample{}, err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return diagnostics.CounterSample{}, backend.ErrClosed
+	}
+	if !b.initialized || b.nft == nil {
+		return diagnostics.CounterSample{}, backend.ErrNotInitialized
+	}
+	if !b.allocated {
+		return diagnostics.CounterSample{}, errors.New("split policy allocations are not initialized")
+	}
+	reader, ok := b.nft.(trafficCounterReader)
+	if !ok {
+		return diagnostics.CounterSample{}, errors.New("nftables manager does not expose owned counters")
+	}
+
+	marks := make(map[uint32]diagnostics.TrafficClass, len(b.allocations.byClass))
+	for class, allocation := range b.allocations.byClass {
+		trafficClass, ok := diagnosticsClass(class)
+		if !ok {
+			continue
+		}
+		marks[allocation.mark.Value] = trafficClass
+	}
+	return reader.TrafficCounters(ctx, marks)
+}
+
+func diagnosticsClass(class routeClass) (diagnostics.TrafficClass, bool) {
+	switch class {
+	case classVPN:
+		return diagnostics.ClassVPN, true
+	case classDirect:
+		return diagnostics.ClassDirect, true
+	case classBlock:
+		return diagnostics.ClassBlock, true
+	case classExit:
+		return diagnostics.ClassExit, true
+	default:
+		return "", false
+	}
 }
 
 // GetStatus returns a snapshot of the lifecycle state, capabilities and owned

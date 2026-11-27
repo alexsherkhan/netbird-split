@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/diagnostics"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/policy"
 )
 
@@ -52,6 +53,10 @@ func (platformBackend) Rollback(context.Context) error {
 
 func (platformBackend) GetStatus(context.Context) (backend.Status, error) {
 	return backend.Status{}, errUnsupportedPlatform
+}
+
+func (platformBackend) TrafficCounters(context.Context) (diagnostics.CounterSample, error) {
+	return diagnostics.CounterSample{}, errUnsupportedPlatform
 }
 
 func (platformBackend) EmergencyReset(context.Context) error {

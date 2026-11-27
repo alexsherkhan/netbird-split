@@ -25,6 +25,7 @@ import (
 	"github.com/netbirdio/netbird/client/internal/splittunnel/application"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/diagnostics"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/domain"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/policy"
 )
@@ -174,6 +175,7 @@ type Controller struct {
 	appScopes          []backend.ApplicationScope
 	protectionArmed    bool
 	diagnostics        map[string]string
+	diag               *diagnostics.Recorder
 
 	tracker    *domain.Tracker
 	dnsRuntime DNSRuntime
@@ -204,6 +206,7 @@ func New(path string, opts Options) *Controller {
 		historyLimit:        historyLimit,
 		maintenanceInterval: interval,
 		diagnostics:         make(map[string]string),
+		diag:                diagnostics.NewRecorder(nil),
 	}
 }
 
@@ -301,6 +304,10 @@ func (c *Controller) Stop(ctx context.Context) error {
 	}
 
 	var merr error
+	if c.protectionArmed {
+		c.diag.RecordKillSwitch("emergency_reset")
+		c.protectionArmed = false
+	}
 	if err := c.backend.EmergencyReset(ctx); err != nil {
 		merr = errors.Join(merr, fmt.Errorf("reset split tunnel policy: %w", err))
 	}
@@ -413,7 +420,7 @@ func (c *Controller) Reapply(ctx context.Context) error {
 		c.recordApplyErrorLocked(err)
 		return err
 	}
-	if err := c.backend.ApplyPolicy(ctx, compiled, wiring.Options); err != nil {
+	if err := c.applyPolicy(ctx, compiled, wiring.Options); err != nil {
 		c.recordApplyErrorLocked(err)
 		return err
 	}
@@ -456,10 +463,10 @@ func (c *Controller) Status(ctx context.Context) (api.Status, error) {
 		status.Diagnostics["applications.count"] = fmt.Sprintf("%d", len(c.applications.List()))
 	}
 	if c.tracker != nil {
-		diagnostics := c.tracker.Diagnostics()
-		status.Diagnostics["domain.references"] = fmt.Sprintf("%d", diagnostics.References)
-		status.Diagnostics["domain.addresses"] = fmt.Sprintf("%d", diagnostics.Addresses)
-		status.Diagnostics["domain.conflicts"] = fmt.Sprintf("%d", len(diagnostics.Conflicts))
+		domainDiagnostics := c.tracker.Diagnostics()
+		status.Diagnostics["domain.references"] = fmt.Sprintf("%d", domainDiagnostics.References)
+		status.Diagnostics["domain.addresses"] = fmt.Sprintf("%d", domainDiagnostics.Addresses)
+		status.Diagnostics["domain.conflicts"] = fmt.Sprintf("%d", len(domainDiagnostics.Conflicts))
 	}
 	if c.reconciler != nil {
 		if lastErr := reconcilerLastError(c.reconciler); lastErr != "" {
@@ -476,6 +483,9 @@ func (c *Controller) Status(ctx context.Context) (api.Status, error) {
 				status.Diagnostics["backend.last_error"] = backendStatus.LastError
 			}
 		}
+	}
+	for key, value := range diagnosticsSummary(c.diagnosticsLocked(ctx)) {
+		status.Diagnostics[key] = value
 	}
 	return status, nil
 }
@@ -762,7 +772,7 @@ func (c *Controller) applyCurrentConfigLocked(ctx context.Context) error {
 		c.recordApplyErrorLocked(err)
 		return err
 	}
-	if err := c.backend.ApplyPolicy(ctx, compiled, wiring.Options); err != nil {
+	if err := c.applyPolicy(ctx, compiled, wiring.Options); err != nil {
 		closeTracker(tracker)
 		c.recordApplyErrorLocked(err)
 		return fmt.Errorf("apply split tunnel policy: %w", err)
@@ -792,7 +802,7 @@ func (c *Controller) applyDisabledLocked(ctx context.Context) {
 			c.setDiagnosticLocked("applications.error", err.Error())
 		}
 	}
-	if err := c.backend.ApplyPolicy(ctx, compiled, backend.PolicyOptions{}); err != nil {
+	if err := c.applyPolicy(ctx, compiled, backend.PolicyOptions{}); err != nil {
 		c.recordApplyErrorLocked(err)
 		return
 	}
@@ -801,6 +811,9 @@ func (c *Controller) applyDisabledLocked(ctx context.Context) {
 	c.compiled = compiled
 	c.appliedOptions = backend.PolicyOptions{}
 	c.appScopes = nil
+	if c.protectionArmed {
+		c.diag.RecordKillSwitch("disarmed")
+	}
 	c.protectionArmed = false
 	c.detachTrackerLocked()
 	c.clearDiagnosticLocked("apply.error")
@@ -851,7 +864,7 @@ func (c *Controller) applyAndPersistLocked(ctx context.Context, cfg *config.Conf
 		c.recordApplyErrorLocked(err)
 		return 0, fmt.Errorf("%w: %w", ErrApplyFailed, err)
 	}
-	if err := c.backend.ApplyPolicy(ctx, compiled, wiring.Options); err != nil {
+	if err := c.applyPolicy(ctx, compiled, wiring.Options); err != nil {
 		closeTracker(tracker)
 		c.recordApplyErrorLocked(err)
 		return 0, fmt.Errorf("%w: %w", ErrApplyFailed, err)
@@ -950,15 +963,20 @@ func (c *Controller) preArmLocked(
 	options backend.PolicyOptions,
 ) error {
 	if !protectionEnabled(compiled) {
+		if c.protectionArmed {
+			c.diag.RecordKillSwitch("disarmed")
+		}
 		c.protectionArmed = false
 		return nil
 	}
 	if err := c.backend.InstallProtection(ctx, compiled, options); err != nil {
+		c.diag.RecordKillSwitch("install_failed")
 		c.protectionArmed = false
 		c.setDiagnosticLocked("protection", "failed")
 		c.setDiagnosticLocked("protection.error", err.Error())
 		return fmt.Errorf("pre-arm split tunnel kill switch: %w", err)
 	}
+	c.diag.RecordKillSwitch("armed")
 	c.protectionArmed = true
 	c.clearDiagnosticLocked("protection.error")
 	c.setDiagnosticLocked("protection", "armed")
@@ -1035,7 +1053,7 @@ func (c *Controller) restorePreviousLocked(ctx context.Context, previous *config
 		c.rollbackLocked(ctx)
 		return
 	}
-	if err := c.backend.ApplyPolicy(ctx, compiled, wiring.Options); err != nil {
+	if err := c.applyPolicy(ctx, compiled, wiring.Options); err != nil {
 		closeTracker(tracker)
 		c.setDiagnosticLocked("rollback.error", err.Error())
 		return
@@ -1147,6 +1165,17 @@ func (c *Controller) historyLocked(previous *config.Config) []historyEntry {
 		history = append([]historyEntry(nil), history[len(history)-c.historyLimit+1:]...)
 	}
 	return append(history, historyEntry{Revision: c.revision, Config: previous})
+}
+
+func (c *Controller) applyPolicy(
+	ctx context.Context,
+	compiled *policy.CompiledPolicy,
+	options backend.PolicyOptions,
+) error {
+	start := time.Now()
+	err := c.backend.ApplyPolicy(ctx, compiled, options)
+	c.diag.RecordApply(time.Since(start), err)
+	return err
 }
 
 func (c *Controller) recordApplyErrorLocked(err error) {

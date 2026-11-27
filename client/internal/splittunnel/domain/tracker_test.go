@@ -390,10 +390,14 @@ func TestTrackerUpdateFailureIsRetried(t *testing.T) {
 		aRecord(t, "a.example", "192.0.2.80", 60))
 	err := tracker.ObserveResponse(req, resp)
 	require.ErrorIs(t, err, updateErr)
+	assert.Equal(t, uint64(1), tracker.Diagnostics().Errors,
+		"a failed kernel update is a classification error")
 
 	updater.setError(nil)
 	require.NoError(t, tracker.ObserveResponse(req, resp))
 	assert.Equal(t, 1, updater.count())
+	assert.Equal(t, uint64(1), tracker.Diagnostics().Errors,
+		"a successful retry must not reset the error count")
 }
 
 func TestTrackerConcurrentQueries(t *testing.T) {
