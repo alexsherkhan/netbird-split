@@ -57,6 +57,9 @@ type ClientError struct {
 	Code  string `json:"code"`
 	Short string `json:"short"`
 	Long  string `json:"long"`
+	// Field is the configuration path the daemon blamed for an invalid
+	// configuration, so the editor can point at the offending control.
+	Field string `json:"field,omitempty"`
 	// Command is a command the user can run to complete the operation
 	// themselves, set when the daemon refused it for want of privileges. The
 	// frontend offers it for copying.

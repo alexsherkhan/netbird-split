@@ -56,18 +56,29 @@ type SplitTunnelStatus struct {
 	RedactedFields      []string                   `json:"redactedFields,omitempty"`
 	Degraded            bool                       `json:"degraded"`
 	DegradedChecks      []SplitTunnelDegradedCheck `json:"degradedChecks"`
+	// RestartRequired reports that the configuration enables the engine while
+	// the engine reports it is not running. The daemon exposes no dedicated
+	// restart flag, so this is derived from enabled and running.
+	RestartRequired bool `json:"restartRequired"`
 }
 
-// SplitTunnelRule is the rule summary the overview needs. Conditions stay in
-// the daemon configuration; the full editor is a later milestone.
+// SplitTunnelRule is one rule as the editor sees it. Conditions are included so
+// the editor can round-trip a rule without a second read. Supported is false for
+// a rule carrying a construct this build does not understand; such a rule is
+// preserved untouched on write and cannot be edited.
 type SplitTunnelRule struct {
-	ID             string `json:"id"`
-	Name           string `json:"name"`
-	Enabled        bool   `json:"enabled"`
-	Priority       int32  `json:"priority"`
-	Action         string `json:"action"`
-	ExitNodeID     string `json:"exitNodeId"`
-	ConditionCount int    `json:"conditionCount"`
+	ID                string                 `json:"id"`
+	Name              string                 `json:"name"`
+	Enabled           bool                   `json:"enabled"`
+	Priority          int32                  `json:"priority"`
+	MatchMode         string                 `json:"matchMode"`
+	Action            string                 `json:"action"`
+	ExitNodeID        string                 `json:"exitNodeId"`
+	Description       string                 `json:"description"`
+	ConditionCount    int                    `json:"conditionCount"`
+	Conditions        []SplitTunnelCondition `json:"conditions"`
+	Supported         bool                   `json:"supported"`
+	UnsupportedReason string                 `json:"unsupportedReason"`
 }
 
 // SplitTunnelExitNodeRule is one rule that routes traffic through an exit node.
@@ -112,6 +123,11 @@ type SplitTunnelApplyParams struct {
 	DefaultAction    string                         `json:"defaultAction"`
 	KillSwitch       string                         `json:"killSwitch"`
 	ExitNodes        []SplitTunnelExitNodeSelection `json:"exitNodes"`
+	// RulesChanged replaces every supported rule with Rules. Rules this build
+	// does not understand, and rules omitted while RulesChanged is false, are
+	// preserved unchanged.
+	RulesChanged bool                   `json:"rulesChanged"`
+	Rules        []SplitTunnelRuleInput `json:"rules"`
 }
 
 // SplitTunnelRevision is the revision produced by a successful apply.
@@ -223,6 +239,11 @@ func (s *SplitTunnel) applySettings(cfg *proto.SplitTunnelConfig, p SplitTunnelA
 	mode, err := s.normalizedMode(settings.GetMode(), p.Mode)
 	if err != nil {
 		return err
+	}
+	if p.RulesChanged {
+		if err := s.applyRules(settings, p.Rules); err != nil {
+			return err
+		}
 	}
 
 	switch mode {
@@ -366,6 +387,7 @@ func splitTunnelStatusFromProto(resp *proto.GetSplitTunnelStatusResponse) SplitT
 	}
 	out.DegradedChecks = degradedChecks(resp, out.DiagnosticsRedacted)
 	out.Degraded = len(out.DegradedChecks) > 0
+	out.RestartRequired = out.Enabled && !out.Running
 	return out
 }
 
@@ -461,15 +483,7 @@ func configFromProto(resp *proto.GetSplitTunnelConfigResponse) SplitTunnelConfig
 	out.RuleCount = len(settings.GetRules())
 
 	for _, rule := range settings.GetRules() {
-		summary := SplitTunnelRule{
-			ID:             rule.GetId(),
-			Name:           rule.GetName(),
-			Enabled:        rule.GetEnabled(),
-			Priority:       rule.GetPriority(),
-			Action:         rule.GetAction(),
-			ExitNodeID:     rule.GetExitNodeId(),
-			ConditionCount: len(rule.GetConditions()),
-		}
+		summary := splitTunnelRule(rule)
 		out.Rules = append(out.Rules, summary)
 		if rule.GetAction() == string(config.ActionExitNode) {
 			out.ExitNodeRules = append(out.ExitNodeRules, SplitTunnelExitNodeRule{
@@ -557,8 +571,14 @@ func (s *SplitTunnel) classifyReason(st *status.Status, info *errdetails.ErrorIn
 	}
 
 	long := st.Message()
-	if field := info.GetMetadata()["field"]; field != "" {
+	field := info.GetMetadata()["field"]
+	if field != "" {
 		long = field + ": " + long
 	}
-	return &ClientError{Code: code, Short: s.classifier.translateShort(code), Long: long}
+	return &ClientError{
+		Code:  code,
+		Short: s.classifier.translateShort(code),
+		Long:  long,
+		Field: field,
+	}
 }
