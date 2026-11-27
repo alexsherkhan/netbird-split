@@ -34,6 +34,11 @@ const (
 	setExit4    setName = "exit4"
 	setExit6    setName = "exit6"
 
+	// The kill switch keeps control and transport prefixes in its own set so
+	// global mode can allow them without allowing every direct destination.
+	setKillSwitchControl4 setName = "kscontrol4"
+	setKillSwitchControl6 setName = "kscontrol6"
+
 	// The original domains4/domains6 names are kept as the VPN domain sets so
 	// an existing owned table reconciles without a foreign-object error.
 	setDomains4      setName = "domains4"
@@ -102,6 +107,8 @@ func setSpecs() []setSpec {
 		{name: setBlocked6, keyType: nftables.TypeIP6Addr, interval: true, comment: "split tunnel blocked prefixes, IPv6"},
 		{name: setExit4, keyType: nftables.TypeIPAddr, interval: true, comment: "split tunnel exit-node prefixes, IPv4"},
 		{name: setExit6, keyType: nftables.TypeIP6Addr, interval: true, comment: "split tunnel exit-node prefixes, IPv6"},
+		{name: setKillSwitchControl4, keyType: nftables.TypeIPAddr, interval: true, comment: "kill switch control and transport prefixes, IPv4"},
+		{name: setKillSwitchControl6, keyType: nftables.TypeIP6Addr, interval: true, comment: "kill switch control and transport prefixes, IPv6"},
 		{name: setDomains4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel VPN domains, IPv4"},
 		{name: setDomains6, keyType: nftables.TypeIP6Addr, timeout: domainSetTimeout, comment: "split tunnel VPN domains, IPv6"},
 		{name: setDomainDirect4, keyType: nftables.TypeIPAddr, timeout: domainSetTimeout, comment: "split tunnel direct domains, IPv4"},

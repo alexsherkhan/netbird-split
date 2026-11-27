@@ -8,14 +8,16 @@
 // rules tagged with the backend marker and only routes and policy rules
 // allocated from the split ranges. The IPv6 path runs only when the policy
 // enables it and the host has a usable IPv6 stack; otherwise IPv4 is applied
-// unchanged. Resolved domain addresses are kept in owned timeout sets. Kill
-// switch modes and crash recovery are later milestones.
+// unchanged. Resolved domain addresses are kept in owned timeout sets. The
+// owned kill switch chain enforces the configured disabled, selective, global
+// or strict mode. A persistent recovery journal is a later milestone.
 package linux
 
 import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"sync"
 	"time"
 
@@ -45,6 +47,7 @@ type nftManager interface {
 	CreatedTable() bool
 	Owned() backend.OwnedObjects
 	ApplyPolicy(ctx context.Context, policy nftPolicy) error
+	ApplyKillSwitch(ctx context.Context, controlSets map[setName][]netip.Prefix, rules []nftKillRule) error
 	ApplyDomainSets(ctx context.Context, updates []backend.DomainSetUpdate) error
 	ClearPolicy(ctx context.Context) error
 }
@@ -199,6 +202,83 @@ func (b *Backend) ApplyPolicy(
 	return b.applyPolicyLocked(ctx, compiled, options)
 }
 
+// InstallProtection installs or replaces only the kill switch rules for the
+// configured mode. It is the idempotent pre-arm path a caller uses before
+// managed traffic: protection is in the kernel before routes and
+// classification are applied. A disabled mode clears the rules. Selective
+// protection refers to the destination sets that ApplyPolicy populates, so it
+// becomes fully effective once that policy is applied; global and strict are
+// effective immediately. The call does not remember a policy for Reapply.
+// Wiring the call into a boot unit, systemd ordering or a delegated privilege
+// path is not part of this milestone.
+func (b *Backend) InstallProtection(
+	ctx context.Context,
+	compiled *policy.CompiledPolicy,
+	options backend.PolicyOptions,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return backend.ErrClosed
+	}
+	if !b.initialized {
+		return backend.ErrNotInitialized
+	}
+	if err := b.ensureAllocationsLocked(); err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("allocate split policy routing primitives: %w", err)
+	}
+
+	enableIPv6 := compiled != nil && compiled.IPv6 && b.ipv6AvailableLocked()
+	rules, controlSets, err := compileKillSwitch(compiled, options, b.allocations, enableIPv6)
+	if err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("compile kill switch: %w", err)
+	}
+	if err := b.nft.ApplyKillSwitch(ctx, controlSets, rules); err != nil {
+		b.recordErrorLocked(err)
+		return fmt.Errorf("install kill switch: %w", err)
+	}
+
+	b.updatedAt = time.Now().UTC()
+	return nil
+}
+
+// EmergencyReset removes applied classification rules, protected routes and
+// kill switch rules and forgets the last policy, restoring normal connectivity
+// until ApplyPolicy arms protection again. It is idempotent and does not remove
+// the baseline owned table.
+func (b *Backend) EmergencyReset(ctx context.Context) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	b.mu.Lock()
+	defer b.mu.Unlock()
+
+	if b.closed {
+		return backend.ErrClosed
+	}
+	if !b.initialized {
+		return nil
+	}
+	if err := b.rollbackPolicyLocked(ctx); err != nil {
+		b.recordErrorLocked(err)
+		return err
+	}
+
+	b.lastPolicy = nil
+	b.lastOptions = backend.PolicyOptions{}
+	b.hasPolicy = false
+	b.lastError = ""
+	return nil
+}
+
 // Reapply re-applies the last successfully applied policy. It is used by the
 // netlink reconciler after interface, address, route or gateway changes. It
 // returns nil before any policy has been applied and for a disabled policy.
@@ -295,6 +375,7 @@ func (b *Backend) rememberPolicyLocked(compiled *policy.CompiledPolicy, options 
 func clonePolicyOptions(options backend.PolicyOptions) backend.PolicyOptions {
 	cloned := options
 	cloned.Applications = append([]backend.ApplicationScope(nil), options.Applications...)
+	cloned.DNSResolvers = append([]netip.Prefix(nil), options.DNSResolvers...)
 	if options.ExitNode == nil {
 		return cloned
 	}

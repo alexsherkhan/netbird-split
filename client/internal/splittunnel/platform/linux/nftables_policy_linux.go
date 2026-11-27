@@ -46,8 +46,9 @@ func (f nftFamily) String() string {
 // logical rather than a list of raw netlink expressions so policy compilation
 // stays testable without a kernel.
 type nftPolicy struct {
-	sets  map[setName][]netip.Prefix
-	rules []nftRule
+	sets       map[setName][]netip.Prefix
+	rules      []nftRule
+	killswitch []nftKillRule
 }
 
 // nftRule is one ordered classification rule. All matches must hold, then the
@@ -74,6 +75,7 @@ func policySetNames() []setName {
 	return []setName{
 		setVPN4, setDirect4, setBlocked4, setExit4,
 		setVPN6, setDirect6, setBlocked6, setExit6,
+		setKillSwitchControl4, setKillSwitchControl6,
 	}
 }
 
@@ -100,15 +102,20 @@ func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) err
 		return err
 	}
 
-	var classify *nftables.Chain
+	var classify, killswitch *nftables.Chain
 	for _, chain := range chains {
-		if chain.Name == string(chainClassifyOutput) {
+		switch chain.Name {
+		case string(chainClassifyOutput):
 			classify = chain
-			break
+		case string(chainKillswitch):
+			killswitch = chain
 		}
 	}
 	if classify == nil {
 		return fmt.Errorf("owned chain %q is missing", chainClassifyOutput)
+	}
+	if len(policy.killswitch) > 0 && killswitch == nil {
+		return fmt.Errorf("owned chain %q is missing", chainKillswitch)
 	}
 
 	sets, err := m.ownedSets()
@@ -150,9 +157,99 @@ func (m *nftablesManager) ApplyPolicy(ctx context.Context, policy nftPolicy) err
 			UserData: ownedRuleUserData,
 		})
 	}
+	for i := range policy.killswitch {
+		exprs, err := nftKillRuleExprs(policy.killswitch[i], sets)
+		if err != nil {
+			return err
+		}
+		m.conn.AddRule(&nftables.Rule{
+			Table:    m.table,
+			Chain:    killswitch,
+			Exprs:    exprs,
+			UserData: ownedRuleUserData,
+		})
+	}
 
 	if err := m.conn.Flush(); err != nil {
 		return fmt.Errorf("apply owned nftables policy: %w", err)
+	}
+	return nil
+}
+
+// ApplyKillSwitch replaces the kill switch rules without touching the
+// classification rules or the protected routing tables. It is the pre-arm path
+// a caller uses before managed traffic is applied, and repeated calls are
+// idempotent. An empty rule set clears the chain.
+func (m *nftablesManager) ApplyKillSwitch(
+	ctx context.Context,
+	controlSets map[setName][]netip.Prefix,
+	rules []nftKillRule,
+) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	if m.table == nil {
+		return errors.New("nftables table is not initialized")
+	}
+	if err := m.verifySets(); err != nil {
+		return err
+	}
+	chains, err := m.chainsInTable()
+	if err != nil {
+		return err
+	}
+	if err := verifyExistingChains(chains); err != nil {
+		return err
+	}
+	chainRules, err := m.rulesByChain(chains)
+	if err != nil {
+		return err
+	}
+
+	var killswitch *nftables.Chain
+	for _, chain := range chains {
+		if chain.Name == string(chainKillswitch) {
+			killswitch = chain
+			break
+		}
+	}
+	if killswitch == nil {
+		return fmt.Errorf("owned chain %q is missing", chainKillswitch)
+	}
+	sets, err := m.ownedSets()
+	if err != nil {
+		return err
+	}
+
+	for _, rule := range chainRules[string(chainKillswitch)] {
+		if err := m.conn.DelRule(rule); err != nil {
+			return fmt.Errorf("delete owned kill switch rule %d: %w", rule.Handle, err)
+		}
+	}
+	for _, name := range []setName{setKillSwitchControl4, setKillSwitchControl6} {
+		m.conn.FlushSet(sets[name])
+		if len(controlSets[name]) == 0 {
+			continue
+		}
+		if err := m.conn.SetAddElements(sets[name], prefixSetElements(controlSets[name])); err != nil {
+			return fmt.Errorf("add kill switch control prefixes to set %q: %w", name, err)
+		}
+	}
+	for i := range rules {
+		exprs, err := nftKillRuleExprs(rules[i], sets)
+		if err != nil {
+			return err
+		}
+		m.conn.AddRule(&nftables.Rule{
+			Table:    m.table,
+			Chain:    killswitch,
+			Exprs:    exprs,
+			UserData: ownedRuleUserData,
+		})
+	}
+
+	if err := m.conn.Flush(); err != nil {
+		return fmt.Errorf("apply owned kill switch rules: %w", err)
 	}
 	return nil
 }
@@ -313,16 +410,11 @@ func (m *nftablesManager) ownedSets() (map[setName]*nftables.Set, error) {
 func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, error) {
 	// An inet table sees both families, so every rule has to state which one it
 	// applies to. Without the guard an IPv4 rule would also match IPv6 traffic.
-	exprs := []expr.Any{
-		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
-		&expr.Cmp{
-			Op:       expr.CmpOpEq,
-			Register: 1,
-			Data:     binaryutil.NativeEndian.PutUint32(rule.family.nfproto()),
-		},
+	exprs := familyGuardExprs(rule.family)
+	exprs = append(exprs,
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
-	}
+	)
 
 	if rule.cgroup != nil {
 		exprs = append(exprs,
@@ -349,42 +441,11 @@ func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, err
 		)
 	}
 
-	for _, match := range rule.matches {
-		switch {
-		case match.set != "":
-			set := sets[match.set]
-			if set == nil {
-				return nil, fmt.Errorf("owned set %q is missing", match.set)
-			}
-			if setFamily(match.set) != rule.family {
-				return nil, fmt.Errorf("set %q does not belong to %v rules",
-					match.set, rule.family)
-			}
-			exprs = append(exprs,
-				&expr.Payload{
-					DestRegister: 1,
-					Base:         expr.PayloadBaseNetworkHeader,
-					Offset:       destinationOffset(rule.family),
-					Len:          addressLength(rule.family),
-				},
-				&expr.Lookup{SourceRegister: 1, SetID: set.ID, SetName: set.Name},
-			)
-		case match.prefix.IsValid():
-			if familyOfPrefix(match.prefix) != rule.family {
-				return nil, fmt.Errorf("prefix %s does not belong to %v rules",
-					match.prefix, rule.family)
-			}
-			exprs = append(exprs, prefixExprs(match.prefix)...)
-		}
-
-		if match.protocol != "" {
-			protocolExprs, err := protocolPortExprs(match.protocol, match.port)
-			if err != nil {
-				return nil, err
-			}
-			exprs = append(exprs, protocolExprs...)
-		}
+	matches, err := nftMatchExprs(rule.family, rule.matches, sets)
+	if err != nil {
+		return nil, err
 	}
+	exprs = append(exprs, matches...)
 
 	if rule.bypass {
 		exprs = append(exprs, &expr.Verdict{Kind: expr.VerdictReturn})
@@ -399,6 +460,94 @@ func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, err
 	return exprs, nil
 }
 
+// nftKillRuleExprs compiles one kill switch rule. Kill switch rules run after
+// classification, so they match the mark the route chain already set instead
+// of requiring the mark to be zero.
+func nftKillRuleExprs(rule nftKillRule, sets map[setName]*nftables.Set) ([]expr.Any, error) {
+	exprs := familyGuardExprs(rule.family)
+	if rule.mark != nil {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     binaryutil.NativeEndian.PutUint32(*rule.mark),
+			},
+		)
+	}
+
+	matches, err := nftMatchExprs(rule.family, rule.matches, sets)
+	if err != nil {
+		return nil, err
+	}
+	exprs = append(exprs, matches...)
+
+	kind := expr.VerdictReturn
+	switch rule.verdict {
+	case verdictAccept:
+		kind = expr.VerdictAccept
+	case verdictDrop:
+		kind = expr.VerdictDrop
+	}
+	return append(exprs, &expr.Verdict{Kind: kind}), nil
+}
+
+func familyGuardExprs(family nftFamily) []expr.Any {
+	return []expr.Any{
+		&expr.Meta{Key: expr.MetaKeyNFPROTO, Register: 1},
+		&expr.Cmp{
+			Op:       expr.CmpOpEq,
+			Register: 1,
+			Data:     binaryutil.NativeEndian.PutUint32(family.nfproto()),
+		},
+	}
+}
+
+func nftMatchExprs(
+	family nftFamily,
+	matches []nftMatch,
+	sets map[setName]*nftables.Set,
+) ([]expr.Any, error) {
+	var exprs []expr.Any
+	for _, match := range matches {
+		switch {
+		case match.set != "":
+			set := sets[match.set]
+			if set == nil {
+				return nil, fmt.Errorf("owned set %q is missing", match.set)
+			}
+			if setFamily(match.set) != family {
+				return nil, fmt.Errorf("set %q does not belong to %v rules",
+					match.set, family)
+			}
+			exprs = append(exprs,
+				&expr.Payload{
+					DestRegister: 1,
+					Base:         expr.PayloadBaseNetworkHeader,
+					Offset:       destinationOffset(family),
+					Len:          addressLength(family),
+				},
+				&expr.Lookup{SourceRegister: 1, SetID: set.ID, SetName: set.Name},
+			)
+		case match.prefix.IsValid():
+			if familyOfPrefix(match.prefix) != family {
+				return nil, fmt.Errorf("prefix %s does not belong to %v rules",
+					match.prefix, family)
+			}
+			exprs = append(exprs, prefixExprs(match.prefix)...)
+		}
+
+		if match.protocol != "" {
+			protocolExprs, err := protocolPortExprs(match.protocol, match.port)
+			if err != nil {
+				return nil, err
+			}
+			exprs = append(exprs, protocolExprs...)
+		}
+	}
+	return exprs, nil
+}
+
 const (
 	ipv4AddressLength       = 4
 	ipv4DestinationOffset   = 16
@@ -410,6 +559,7 @@ const (
 func setFamily(name setName) nftFamily {
 	switch name {
 	case setVPN6, setDirect6, setBlocked6, setExit6,
+		setKillSwitchControl6,
 		setDomains6, setDomainDirect6, setDomainBlock6:
 		return family6
 	default:

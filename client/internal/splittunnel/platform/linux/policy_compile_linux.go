@@ -70,10 +70,6 @@ func compilePolicyForWithResolver(
 	if !compiled.Enabled {
 		return &policyPlan{}, nil
 	}
-	if compiled.KillSwitch != "" && compiled.KillSwitch != config.KillSwitchDisabled {
-		return nil, fmt.Errorf("kill switch mode %q: %w",
-			compiled.KillSwitch, backend.ErrNotImplemented)
-	}
 	if err := validateSingleExitNode(compiled, options); err != nil {
 		return nil, err
 	}
@@ -193,10 +189,19 @@ func compilePolicyForWithResolver(
 		}
 	}
 
+	killswitch, controlSets, err := compileKillSwitch(compiled, options, allocations, enableIPv6)
+	if err != nil {
+		return nil, err
+	}
+	for name, prefixes := range controlSets {
+		sets[name] = append(sets[name], prefixes...)
+	}
+
 	return &policyPlan{
 		nft: nftPolicy{
-			sets:  normalizeSetPrefixes(sets),
-			rules: rules,
+			sets:       normalizeSetPrefixes(sets),
+			rules:      rules,
+			killswitch: killswitch,
 		},
 		route: routePlan{classes: routeClasses4, classes6: routeClasses6},
 	}, nil
