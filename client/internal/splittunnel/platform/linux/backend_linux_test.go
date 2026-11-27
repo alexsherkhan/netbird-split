@@ -25,12 +25,17 @@ func (f *fakeProber) Probe(context.Context) (backend.Capabilities, error) {
 }
 
 type fakeManager struct {
-	ensureErr    error
-	cleanupErr   error
-	createdTable bool
-	ensureCalls  int
-	cleanupCalls int
-	owned        backend.OwnedObjects
+	ensureErr       error
+	cleanupErr      error
+	applyPolicyErr  error
+	clearPolicyErr  error
+	createdTable    bool
+	ensureCalls     int
+	cleanupCalls    int
+	applyCalls      int
+	clearCalls      int
+	appliedPolicies []nftPolicy
+	owned           backend.OwnedObjects
 }
 
 func (f *fakeManager) Ensure(context.Context) error {
@@ -51,6 +56,38 @@ func (f *fakeManager) Owned() backend.OwnedObjects {
 	return f.owned.Clone()
 }
 
+func (f *fakeManager) ApplyPolicy(_ context.Context, policy nftPolicy) error {
+	f.applyCalls++
+	f.appliedPolicies = append(f.appliedPolicies, policy)
+	return f.applyPolicyErr
+}
+
+func (f *fakeManager) ClearPolicy(context.Context) error {
+	f.clearCalls++
+	return f.clearPolicyErr
+}
+
+type fakeRouter struct {
+	applyErr    error
+	removeErr   error
+	applyCalls  int
+	removeCalls int
+	plans       []routePlan
+	allocations allocations
+}
+
+func (f *fakeRouter) Apply(_ context.Context, plan routePlan) error {
+	f.applyCalls++
+	f.plans = append(f.plans, plan)
+	return f.applyErr
+}
+
+func (f *fakeRouter) Remove(_ context.Context, allocations allocations) error {
+	f.removeCalls++
+	f.allocations = allocations
+	return f.removeErr
+}
+
 func availableCapabilities() backend.Capabilities {
 	ids := []backend.CapabilityID{
 		backend.CapabilityNFTables,
@@ -68,12 +105,26 @@ func availableCapabilities() backend.Capabilities {
 }
 
 func newTestBackend(probe capabilityProber, manager nftManager) (*Backend, *int) {
+	b, openCalls, _ := newTestBackendWithRouter(probe, manager, &fakeRouter{})
+	return b, openCalls
+}
+
+func newTestBackendWithRouter(
+	probe capabilityProber,
+	manager nftManager,
+	router routeManager,
+) (*Backend, *int, *fakeRouter) {
 	openCalls := 0
 	open := func(string) (nftManager, error) {
 		openCalls++
 		return manager, nil
 	}
-	return newBackend(probe, open, "netbird_split_test"), &openCalls
+	fake, ok := router.(*fakeRouter)
+	if !ok {
+		fake = &fakeRouter{}
+	}
+	b := newBackendWith(probe, open, router, "netbird_split_test")
+	return b, &openCalls, fake
 }
 
 func defaultOwned() backend.OwnedObjects {
@@ -192,16 +243,23 @@ func TestInitializeDegradesOnOptionalCapability(t *testing.T) {
 	assert.Equal(t, backend.StateDegraded, status.State)
 }
 
-func TestPolicyOperationsAreNotImplemented(t *testing.T) {
+func TestApplyPolicyRejectsNilPolicy(t *testing.T) {
 	probe := &fakeProber{capabilities: availableCapabilities()}
 	b, _ := newTestBackend(probe, &fakeManager{createdTable: true})
 
 	require.NoError(t, b.Initialize(context.Background()))
 
-	err := b.ApplyPolicy(context.Background(), nil)
-	require.ErrorIs(t, err, backend.ErrNotImplemented)
+	err := b.ApplyPolicy(context.Background(), nil, backend.PolicyOptions{})
+	require.ErrorIs(t, err, backend.ErrInvalidPolicyOption)
+}
 
-	err = b.UpdateDomainSets(context.Background(), nil)
+func TestUpdateDomainSetsIsNotImplemented(t *testing.T) {
+	probe := &fakeProber{capabilities: availableCapabilities()}
+	b, _ := newTestBackend(probe, &fakeManager{createdTable: true})
+
+	require.NoError(t, b.Initialize(context.Background()))
+
+	err := b.UpdateDomainSets(context.Background(), nil)
 	require.ErrorIs(t, err, backend.ErrNotImplemented)
 }
 
@@ -209,7 +267,7 @@ func TestPolicyOperationsRequireInitialization(t *testing.T) {
 	probe := &fakeProber{capabilities: availableCapabilities()}
 	b, _ := newTestBackend(probe, &fakeManager{})
 
-	err := b.ApplyPolicy(context.Background(), nil)
+	err := b.ApplyPolicy(context.Background(), nil, backend.PolicyOptions{})
 	require.ErrorIs(t, err, backend.ErrNotInitialized)
 
 	err = b.UpdateDomainSets(context.Background(), nil)
@@ -273,7 +331,7 @@ func TestCloseIsIdempotentAndTerminal(t *testing.T) {
 
 	assert.Equal(t, 1, manager.cleanupCalls)
 	require.ErrorIs(t, b.Initialize(context.Background()), backend.ErrClosed)
-	require.ErrorIs(t, b.ApplyPolicy(context.Background(), nil), backend.ErrClosed)
+	require.ErrorIs(t, b.ApplyPolicy(context.Background(), nil, backend.PolicyOptions{}), backend.ErrClosed)
 	require.NoError(t, b.Cleanup(context.Background()))
 
 	status, err := b.GetStatus(context.Background())
