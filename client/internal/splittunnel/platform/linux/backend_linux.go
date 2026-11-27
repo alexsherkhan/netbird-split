@@ -59,6 +59,7 @@ type Backend struct {
 
 	state         backend.State
 	capabilities  backend.Capabilities
+	cgroupIDs     cgroupIDResolver
 	nft           nftManager
 	allocations   allocations
 	allocated     bool
@@ -98,6 +99,7 @@ func newBackendWith(
 		probe:        probe,
 		openNFTables: openNFTables,
 		router:       router,
+		cgroupIDs:    newStatCgroupResolver(),
 		state:        backend.StateUninitialized,
 		updatedAt:    time.Now().UTC(),
 		capabilities: backend.Capabilities{},
@@ -196,9 +198,16 @@ func (b *Backend) ApplyPolicy(
 		b.recordErrorLocked(err)
 		return fmt.Errorf("allocate split policy routing primitives: %w", err)
 	}
+	if compiled != nil && compiled.UsesApplications() {
+		if err := b.requireApplicationCapabilitiesLocked(); err != nil {
+			b.recordErrorLocked(err)
+			return err
+		}
+	}
 
 	enableIPv6 := compiled != nil && compiled.IPv6 && b.ipv6AvailableLocked()
-	plan, err := compilePolicyFor(compiled, options, b.allocations, enableIPv6)
+	plan, err := compilePolicyForWithResolver(
+		compiled, options, b.allocations, enableIPv6, b.cgroupIDs)
 	if err != nil {
 		b.recordErrorLocked(err)
 		return fmt.Errorf("compile policy: %w", err)
@@ -345,6 +354,38 @@ func (b *Backend) rollbackPolicyLocked(ctx context.Context) error {
 
 	b.policyApplied = false
 	return nberrors.FormatErrorOrNil(merr)
+}
+
+// requireApplicationCapabilitiesLocked rejects an application policy when the
+// kernel cannot classify sockets by cgroup. The backend never downgrades to
+// unclassified routing for selected applications.
+func (b *Backend) requireApplicationCapabilitiesLocked() error {
+	for _, id := range []backend.CapabilityID{
+		backend.CapabilityCgroupV2,
+		backend.CapabilitySocketCgroupV2,
+	} {
+		state := b.capabilities.StateOf(id)
+		if state == backend.CapabilityAvailable {
+			continue
+		}
+		if id == backend.CapabilitySocketCgroupV2 && state == backend.CapabilityDegraded {
+			continue
+		}
+		return &backend.CapabilityError{
+			Capability: id,
+			State:      state,
+			Detail:     b.capabilityDetailLocked(id),
+		}
+	}
+	return nil
+}
+
+func (b *Backend) capabilityDetailLocked(id backend.CapabilityID) string {
+	item, ok := b.capabilities.Get(id)
+	if !ok {
+		return "capability was not probed"
+	}
+	return item.Detail
 }
 
 // ipv6AvailableLocked reports whether the probed host stack can carry IPv6.

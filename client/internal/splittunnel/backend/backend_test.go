@@ -68,6 +68,14 @@ func TestCapabilitiesLookup(t *testing.T) {
 	assert.True(t, capabilities.Degraded())
 }
 
+func TestCapabilitiesOptionalEBPFIsNotDegraded(t *testing.T) {
+	capabilities := Capabilities{Items: []Capability{
+		{ID: CapabilityNFTables, State: CapabilityAvailable},
+		{ID: CapabilityEBPF, State: CapabilityUnavailable, Detail: "not configured"},
+	}}
+	assert.False(t, capabilities.Degraded())
+}
+
 func TestCapabilitiesMissing(t *testing.T) {
 	capabilities := Capabilities{Items: []Capability{
 		{ID: CapabilityNFTables, State: CapabilityAvailable},
@@ -198,4 +206,24 @@ func TestStateValid(t *testing.T) {
 		assert.Equal(t, string(state), state.String())
 	}
 	assert.False(t, State("unknown").Valid())
+}
+
+func TestApplicationScopeValidate(t *testing.T) {
+	valid := ApplicationScope{
+		Identity:   ApplicationIdentity{DesktopID: "firefox.desktop"},
+		UID:        1000,
+		CgroupPath: "user.slice/user-1000.slice/app.slice/firefox.scope",
+	}
+	require.NoError(t, valid.Validate())
+
+	for _, invalid := range []ApplicationScope{
+		{},
+		{CgroupPath: "/absolute/path"},
+		{CgroupPath: "a//b"},
+		{CgroupPath: "a/./b"},
+		{CgroupPath: "a/../b"},
+		{CgroupPath: `a\b`},
+	} {
+		require.Error(t, invalid.Validate(), "scope %+v must be rejected", invalid)
+	}
 }

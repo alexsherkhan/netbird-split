@@ -11,6 +11,7 @@ import (
 	"errors"
 	"fmt"
 	"net/netip"
+	"strings"
 	"time"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
@@ -198,18 +199,59 @@ func (e ExitNode) Validate() error {
 	return nil
 }
 
+// ApplicationIdentity is the stable identity a classified process was mapped
+// to. Empty fields never match a policy condition.
+type ApplicationIdentity struct {
+	DesktopID  config.DesktopID
+	Executable config.Executable
+	FlatpakID  config.FlatpakID
+	SnapID     config.SnapID
+}
+
+// ApplicationScope is a live application cgroup the classifier owns. CgroupPath
+// is relative to the cgroup v2 mount point and identifies the scope a policy
+// rule should match. UID separates concurrent user sessions that run the same
+// application.
+type ApplicationScope struct {
+	Identity   ApplicationIdentity
+	UID        config.UID
+	CgroupPath string
+}
+
+// Validate checks that the scope can be turned into a socket cgroup match.
+func (s ApplicationScope) Validate() error {
+	if s.CgroupPath == "" {
+		return errors.New("cgroup path is empty")
+	}
+	if len(s.CgroupPath) > 0 && s.CgroupPath[0] == '/' {
+		return errors.New("cgroup path must be relative to the cgroup root")
+	}
+	if strings.Contains(s.CgroupPath, `\`) {
+		return errors.New("cgroup path must use forward slashes")
+	}
+	parts := strings.Split(s.CgroupPath, "/")
+	for _, part := range parts {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("cgroup path %q contains an invalid component %q", s.CgroupPath, part)
+		}
+	}
+	return nil
+}
+
 // PolicyOptions are the runtime egress targets a backend needs to enforce a
 // compiled policy. VPN and Direct are only required when the policy uses those
 // actions. VPN6 and Direct6 are their IPv6 counterparts and are only required
 // when the policy enables IPv6 and the corresponding class is used. ExitNode
 // may be nil when no exit node is authorized; exit rules are then installed
-// fail-closed.
+// fail-closed. Applications are the live classified cgroup scopes for rules
+// that select an application or a user ID.
 type PolicyOptions struct {
-	VPN      RouteTarget
-	Direct   RouteTarget
-	VPN6     RouteTarget6
-	Direct6  RouteTarget6
-	ExitNode *ExitNode
+	VPN          RouteTarget
+	Direct       RouteTarget
+	VPN6         RouteTarget6
+	Direct6      RouteTarget6
+	ExitNode     *ExitNode
+	Applications []ApplicationScope
 }
 
 // State is the lifecycle state of a network backend.
@@ -264,6 +306,13 @@ const (
 	CapabilityRouteOutputHook CapabilityID = "route_output_hook"
 	// CapabilityCgroupV2 is the cgroup v2 unified hierarchy.
 	CapabilityCgroupV2 CapabilityID = "cgroup_v2"
+	// CapabilitySocketCgroupV2 is the nftables socket cgroupv2 expression. It
+	// is required only when a policy selects applications.
+	CapabilitySocketCgroupV2 CapabilityID = "socket_cgroup_v2"
+	// CapabilityEBPF reports optional kernel eBPF support. The classifier uses
+	// cgroup v2 as its required path and never falls back to unclassified
+	// routing when eBPF is unavailable.
+	CapabilityEBPF CapabilityID = "ebpf"
 	// CapabilityIPv6 is a usable local IPv6 network stack.
 	CapabilityIPv6 CapabilityID = "ipv6"
 )
@@ -316,9 +365,13 @@ func (c Capabilities) StateOf(id CapabilityID) CapabilityState {
 	return item.State
 }
 
-// Degraded reports whether any probed capability is not fully available.
+// Degraded reports whether any required probed capability is not fully
+// available. Optional eBPF support never makes a cgroup v2 backend degraded.
 func (c Capabilities) Degraded() bool {
 	for _, item := range c.Items {
+		if item.ID == CapabilityEBPF {
+			continue
+		}
 		if item.State != CapabilityAvailable {
 			return true
 		}

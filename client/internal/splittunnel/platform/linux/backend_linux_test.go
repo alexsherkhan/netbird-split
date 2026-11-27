@@ -11,6 +11,7 @@ import (
 	"github.com/stretchr/testify/require"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/config"
 )
 
 type fakeProber struct {
@@ -95,6 +96,8 @@ func availableCapabilities() backend.Capabilities {
 		backend.CapabilityPolicyRouting,
 		backend.CapabilityRouteOutputHook,
 		backend.CapabilityCgroupV2,
+		backend.CapabilitySocketCgroupV2,
+		backend.CapabilityEBPF,
 		backend.CapabilityIPv6,
 	}
 	items := make([]backend.Capability, len(ids))
@@ -435,4 +438,109 @@ func TestGetCapabilitiesRefreshesStatus(t *testing.T) {
 	status, err := b.GetStatus(context.Background())
 	require.NoError(t, err)
 	assert.Equal(t, backend.StateDegraded, status.State)
+}
+
+func TestApplyPolicyRequiresApplicationCapabilities(t *testing.T) {
+	tests := []struct {
+		name     string
+		disabled backend.CapabilityID
+	}{
+		{name: "cgroup v2", disabled: backend.CapabilityCgroupV2},
+		{name: "socket cgroupv2", disabled: backend.CapabilitySocketCgroupV2},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			capabilities := availableCapabilities()
+			for i := range capabilities.Items {
+				if capabilities.Items[i].ID == tt.disabled {
+					capabilities.Items[i].State = backend.CapabilityUnavailable
+				}
+			}
+			manager := &fakeManager{createdTable: true}
+			b, _ := newTestBackend(&fakeProber{capabilities: capabilities}, manager)
+			require.NoError(t, b.Initialize(context.Background()))
+
+			compiled := mustCompile(t, includeConfig(
+				testRule("firefox", config.ActionVPN,
+					appCondition(config.ConditionDesktopID, "firefox.desktop")),
+			))
+			err := b.ApplyPolicy(context.Background(), compiled, testOptions())
+			require.ErrorIs(t, err, backend.ErrCapabilityUnavailable)
+			assert.Empty(t, manager.appliedPolicies,
+				"an application policy must not fall back to unclassified routing")
+		})
+	}
+}
+
+func TestApplyPolicyInstallsCgroupRules(t *testing.T) {
+	manager := &fakeManager{createdTable: true}
+	b, _ := newTestBackend(&fakeProber{capabilities: availableCapabilities()}, manager)
+	require.NoError(t, b.Initialize(context.Background()))
+	b.cgroupIDs = fakeCgroupResolver{"apps/firefox.scope": 0x42}
+
+	compiled := mustCompile(t, includeConfig(
+		testRule("firefox", config.ActionVPN,
+			appCondition(config.ConditionDesktopID, "firefox.desktop")),
+	))
+	options := testOptions()
+	options.Applications = []backend.ApplicationScope{{
+		Identity:   backend.ApplicationIdentity{DesktopID: "firefox.desktop"},
+		UID:        1000,
+		CgroupPath: "apps/firefox.scope",
+	}}
+
+	require.NoError(t, b.ApplyPolicy(context.Background(), compiled, options))
+	require.Len(t, manager.appliedPolicies, 1)
+
+	var cgroupRules int
+	for _, rule := range manager.appliedPolicies[0].rules {
+		if rule.cgroup != nil {
+			cgroupRules++
+			assert.Equal(t, uint64(0x42), rule.cgroup.ID)
+		}
+	}
+	assert.Positive(t, cgroupRules, "the compiled policy must contain a socket cgroup match")
+}
+
+func TestApplyPolicyReplacesApplicationCgroupRules(t *testing.T) {
+	manager := &fakeManager{createdTable: true}
+	b, _ := newTestBackend(&fakeProber{capabilities: availableCapabilities()}, manager)
+	require.NoError(t, b.Initialize(context.Background()))
+	resolver := fakeCgroupResolver{
+		"apps/firefox.scope": 0x51,
+		"apps/chrome.scope":  0x52,
+	}
+	b.cgroupIDs = resolver
+
+	compiled := mustCompile(t, includeConfig(
+		testRule("firefox", config.ActionVPN,
+			appCondition(config.ConditionDesktopID, "firefox.desktop")),
+		testRule("chrome", config.ActionDirect,
+			appCondition(config.ConditionDesktopID, "chrome.desktop")),
+	))
+
+	first := testOptions()
+	first.Applications = []backend.ApplicationScope{{
+		Identity:   backend.ApplicationIdentity{DesktopID: "firefox.desktop"},
+		CgroupPath: "apps/firefox.scope",
+	}}
+	require.NoError(t, b.ApplyPolicy(context.Background(), compiled, first))
+
+	second := testOptions()
+	second.Applications = []backend.ApplicationScope{{
+		Identity:   backend.ApplicationIdentity{DesktopID: "chrome.desktop"},
+		CgroupPath: "apps/chrome.scope",
+	}}
+	require.NoError(t, b.ApplyPolicy(context.Background(), compiled, second))
+
+	require.Len(t, manager.appliedPolicies, 2)
+	ids := map[uint64]bool{}
+	for _, rule := range manager.appliedPolicies[1].rules {
+		if rule.cgroup != nil {
+			ids[rule.cgroup.ID] = true
+		}
+	}
+	assert.Equal(t, map[uint64]bool{0x52: true}, ids,
+		"a live policy update must replace the previous application cgroup match")
 }

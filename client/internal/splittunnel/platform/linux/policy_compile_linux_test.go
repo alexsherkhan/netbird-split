@@ -194,13 +194,8 @@ func TestCompilePolicyRejectsUnsupportedConditions(t *testing.T) {
 		name      string
 		condition config.Condition
 	}{
-		{name: "desktop id", condition: config.Condition{Type: config.ConditionDesktopID, DesktopID: "firefox.desktop"}},
-		{name: "executable", condition: config.Condition{Type: config.ConditionExecutable, Executable: "/usr/bin/firefox"}},
-		{name: "flatpak id", condition: config.Condition{Type: config.ConditionFlatpakID, FlatpakID: "org.mozilla.firefox"}},
-		{name: "snap id", condition: config.Condition{Type: config.ConditionSnapID, SnapID: "firefox"}},
 		{name: "domain", condition: config.Condition{Type: config.ConditionDomain, Domain: "example.com"}},
 		{name: "wildcard domain", condition: config.Condition{Type: config.ConditionWildcardDomain, Wildcard: "example.com"}},
-		{name: "uid", condition: config.Condition{Type: config.ConditionUID, UID: new(config.UID)}},
 	}
 
 	for _, tt := range tests {

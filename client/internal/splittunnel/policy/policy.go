@@ -288,3 +288,38 @@ func conditionValue(condition *config.Condition) string {
 		return ""
 	}
 }
+
+// UsesApplications reports whether any enabled rule selects traffic by an
+// application identity. The classifier only needs to create cgroup scopes for
+// policies that use these conditions.
+func (p *CompiledPolicy) UsesApplications() bool {
+	if p == nil || !p.Enabled {
+		return false
+	}
+	for i := range p.BlockRules {
+		if conditionsUseApplications(p.BlockRules[i].Conditions) {
+			return true
+		}
+	}
+	for i := range p.Rules {
+		if conditionsUseApplications(p.Rules[i].Conditions) {
+			return true
+		}
+	}
+	return false
+}
+
+func conditionsUseApplications(conditions []config.Condition) bool {
+	for i := range conditions {
+		switch conditions[i].Type {
+		case config.ConditionDesktopID, config.ConditionExecutable,
+			config.ConditionFlatpakID, config.ConditionSnapID:
+			return true
+		case config.ConditionAll, config.ConditionAny:
+			if conditionsUseApplications(conditions[i].Children) {
+				return true
+			}
+		}
+	}
+	return false
+}

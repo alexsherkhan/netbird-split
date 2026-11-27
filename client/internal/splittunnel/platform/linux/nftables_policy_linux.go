@@ -54,6 +54,8 @@ type nftPolicy struct {
 type nftRule struct {
 	family  nftFamily
 	matches []nftMatch
+	cgroup  *nftCgroupMatch
+	uid     *uint32
 	mark    uint32
 	bypass  bool
 }
@@ -246,6 +248,31 @@ func nftRuleExprs(rule nftRule, sets map[setName]*nftables.Set) ([]expr.Any, err
 		},
 		&expr.Meta{Key: expr.MetaKeyMARK, Register: 1},
 		&expr.Cmp{Op: expr.CmpOpEq, Register: 1, Data: binaryutil.NativeEndian.PutUint32(0)},
+	}
+
+	if rule.cgroup != nil {
+		exprs = append(exprs,
+			&expr.Socket{
+				Key:      expr.SocketKeyCgroupv2,
+				Level:    rule.cgroup.Level,
+				Register: 1,
+			},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     binaryutil.NativeEndian.PutUint64(rule.cgroup.ID),
+			},
+		)
+	}
+	if rule.uid != nil {
+		exprs = append(exprs,
+			&expr.Meta{Key: expr.MetaKeySKUID, Register: 1},
+			&expr.Cmp{
+				Op:       expr.CmpOpEq,
+				Register: 1,
+				Data:     binaryutil.NativeEndian.PutUint32(*rule.uid),
+			},
+		)
 	}
 
 	for _, match := range rule.matches {
