@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/miekg/dns"
@@ -95,6 +96,7 @@ type Diagnostics struct {
 	Updates       uint64
 	Skipped       uint64
 	Dropped       uint64
+	Errors        uint64
 	MaxEntries    int
 }
 
@@ -129,6 +131,7 @@ type Tracker struct {
 	updates       uint64
 	skipped       uint64
 	dropped       uint64
+	errors        atomic.Uint64
 	closed        bool
 }
 
@@ -247,6 +250,7 @@ func (t *Tracker) ObserveResponse(req, resp *dns.Msg) error {
 			delete(t.refs, key)
 		}
 		t.dropped++
+		t.errors.Add(1)
 	}
 
 	snap := t.buildSnapshotLocked(now)
@@ -300,6 +304,7 @@ func (t *Tracker) Diagnostics() Diagnostics {
 		Updates:       t.updates,
 		Skipped:       t.skipped,
 		Dropped:       t.dropped,
+		Errors:        t.errors.Load(),
 		MaxEntries:    t.options.MaxEntries,
 	}
 }
@@ -350,6 +355,7 @@ func (t *Tracker) pushLocked(snap snapshot) error {
 	ctx, cancel := context.WithTimeout(context.Background(), t.options.UpdateTimeout)
 	defer cancel()
 	if err := t.updater.UpdateDomainSets(ctx, cloneUpdates(snap.updates)); err != nil {
+		t.errors.Add(1)
 		return fmt.Errorf("update domain sets: %w", err)
 	}
 

@@ -7,6 +7,7 @@ import (
 	"errors"
 
 	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/diagnostics"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/platform/linux"
 	"github.com/netbirdio/netbird/client/internal/splittunnel/policy"
 )
@@ -76,6 +77,10 @@ func (b *platformBackend) Rollback(ctx context.Context) error {
 
 func (b *platformBackend) GetStatus(ctx context.Context) (backend.Status, error) {
 	return b.backend.GetStatus(ctx)
+}
+
+func (b *platformBackend) TrafficCounters(ctx context.Context) (diagnostics.CounterSample, error) {
+	return b.backend.TrafficCounters(ctx)
 }
 
 func (b *platformBackend) EmergencyReset(ctx context.Context) error {
