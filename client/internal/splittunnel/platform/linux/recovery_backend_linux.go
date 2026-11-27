@@ -70,6 +70,21 @@ func (b *Backend) recoverWithoutJournalLocked(ctx context.Context) (RecoveryRepo
 		return RecoveryReport{Action: RecoveryActionNone}, nil
 	}
 
+	// InstallProtection is the pre-arm path used before managed traffic and
+	// intentionally does not create a journal. If the process dies after that
+	// pre-arm, removing the owned table would remove the only protection. Keep
+	// the guard and report it instead; the caller can emergency-reset it.
+	if observed.nft.KillSwitchRules > 0 && observed.nft.ClassifyRules == 0 &&
+		observed.routes.Routes == 0 && observed.routes.PolicyRules == 0 {
+		b.protectionPreserved = true
+		b.recordRecoveryIssueLocked(
+			"preserved owned kill switch protection without a recovery journal")
+		return RecoveryReport{
+			Action: RecoveryActionVerified,
+			Issues: append([]string(nil), b.recoveryIssues...),
+		}, nil
+	}
+
 	if err := b.removeOrphanedOwnedLocked(ctx); err != nil {
 		b.recordErrorLocked(err)
 		return RecoveryReport{Issues: []string{err.Error()}}, fmt.Errorf("remove orphaned owned state: %w", err)

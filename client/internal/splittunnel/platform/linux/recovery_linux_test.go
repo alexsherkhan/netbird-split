@@ -283,6 +283,19 @@ func TestRecoverCommittedWithoutIntentVerifiesAndRestoresGuard(t *testing.T) {
 	assert.NotEmpty(t, report.Issues)
 }
 
+func TestRecoverWithoutJournalPreservesPreArmedKillSwitch(t *testing.T) {
+	b, manager, router := newRecoveryBackend(t, newMemoryJournal())
+	manager.inspect = nftObservation{TablePresent: true, KillSwitchRules: 3}
+
+	report, err := b.Recover(context.Background(), nil)
+	require.NoError(t, err)
+	assert.Equal(t, RecoveryActionVerified, report.Action)
+	assert.NotEmpty(t, report.Issues)
+	assert.Zero(t, manager.cleanupCalls, "pre-armed protection must not be removed")
+	assert.Zero(t, manager.clearCalls, "pre-armed protection must not be cleared")
+	assert.Zero(t, router.removeCalls, "pre-armed protection must not remove routes")
+}
+
 func TestRecoverInterruptedRollsBackAndIsIdempotent(t *testing.T) {
 	journal := newFileJournal(filepath.Join(t.TempDir(), "journal.json"))
 	b, manager, router := newRecoveryBackend(t, journal)
