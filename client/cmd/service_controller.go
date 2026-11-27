@@ -4,7 +4,11 @@ package cmd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net"
+	"net/netip"
+	"path/filepath"
 	"runtime"
 	"time"
 
@@ -16,6 +20,11 @@ import (
 
 	"github.com/netbirdio/netbird/client/internal/daemonaddr"
 	"github.com/netbirdio/netbird/client/internal/ipcauth"
+	"github.com/netbirdio/netbird/client/internal/profilemanager"
+	"github.com/netbirdio/netbird/client/internal/routemanager/systemops"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/api"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/backend"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/controller"
 	"github.com/netbirdio/netbird/client/mdm"
 	"github.com/netbirdio/netbird/client/proto"
 	"github.com/netbirdio/netbird/client/server"
@@ -55,6 +64,100 @@ func daemonServerOptions(network string) []grpc.ServerOption {
 	}
 
 	return []grpc.ServerOption{grpc.Creds(creds)}
+}
+
+// splitTunnelConfigPath keeps the split tunnel configuration under the daemon's
+// state directory. An explicit --config selects the profile file's directory.
+func splitTunnelConfigPath(configFile string) string {
+	dir := profilemanager.DefaultConfigPathDir
+	if configFile != "" {
+		dir = filepath.Dir(configFile)
+	}
+	return filepath.Join(dir, controller.DefaultConfigFileName)
+}
+
+// newSplitTunnelController wires the platform backend and the daemon's runtime
+// data into the controller. Control/transport prefixes and DNS resolvers are
+// not exposed by the daemon yet, so global and strict kill switches stay
+// unavailable instead of risking the daemon's own connection.
+func newSplitTunnelController(instance *server.Server, configFile string) *controller.Controller {
+	return controller.New(splitTunnelConfigPath(configFile), controller.Options{
+		Backend: controller.NewPlatformBackend(),
+		Runtime: splitTunnelRuntime(instance),
+	})
+}
+
+func splitTunnelRuntime(instance *server.Server) controller.RuntimeProvider {
+	return func(context.Context) (controller.Wiring, error) {
+		iface, overlay4, overlay6 := instance.SplitTunnelRuntime()
+		if iface == "" {
+			return controller.Wiring{}, errors.New("overlay interface is not configured")
+		}
+
+		wiring := controller.Wiring{}
+		wiring.Options.VPN = backend.RouteTarget{Interface: iface}
+		if overlay4.IsValid() {
+			wiring.Options.VPN.Source = overlay4.Unmap()
+		}
+		if overlay6.IsValid() {
+			wiring.Options.VPN6 = backend.RouteTarget6{
+				Interface: iface,
+				Source:    overlay6.Unmap(),
+			}
+		}
+
+		direct, err := directTarget(netip.IPv4Unspecified())
+		if err != nil {
+			return controller.Wiring{}, fmt.Errorf("resolve direct route: %w", err)
+		}
+		wiring.Options.Direct = direct
+		if direct6, err := directTarget(netip.IPv6Unspecified()); err == nil {
+			wiring.Options.Direct6 = backend.RouteTarget6(direct6)
+		}
+		return wiring, nil
+	}
+}
+
+func directTarget(destination netip.Addr) (backend.RouteTarget, error) {
+	next, err := systemops.GetNextHop(destination)
+	if err != nil {
+		return backend.RouteTarget{}, err
+	}
+	if next.Intf == nil || next.Intf.Name == "" {
+		return backend.RouteTarget{}, errors.New("no interface for the default route")
+	}
+
+	target := backend.RouteTarget{Interface: next.Intf.Name}
+	if !next.IP.IsValid() {
+		return target, nil
+	}
+	if interfaceHasAddress(next.Intf, next.IP) {
+		target.Source = next.IP.Unmap()
+	} else {
+		target.Gateway = next.IP.Unmap()
+	}
+	return target, nil
+}
+
+func interfaceHasAddress(iface *net.Interface, addr netip.Addr) bool {
+	addrs, err := iface.Addrs()
+	if err != nil {
+		return false
+	}
+	for _, raw := range addrs {
+		ipNet, ok := raw.(*net.IPNet)
+		if !ok {
+			continue
+		}
+		parsed, ok := netip.AddrFromSlice(ipNet.IP)
+		if !ok {
+			continue
+		}
+		if parsed.Unmap() == addr.Unmap() {
+			return true
+		}
+	}
+	return false
 }
 
 func (p *program) Start(svc service.Service) error {
@@ -214,6 +317,16 @@ func (p *program) serve(daemonListener, jsonListener *socketListener) error {
 	}
 	proto.RegisterDaemonServiceServer(p.serv, serverInstance)
 
+	splitController := newSplitTunnelController(serverInstance, configPath)
+	if err := splitController.Start(p.ctx); err != nil {
+		// The controller records the failure in status; a corrupt split
+		// tunnel configuration must not keep the daemon from serving.
+		log.Warnf("split tunnel controller started with errors: %v", err)
+	}
+	splitService := api.New(splitController)
+	splitService.Register(p.serv)
+	p.setSplitController(splitController)
+
 	p.serverInstanceMu.Lock()
 	p.serverInstance = serverInstance
 	p.serverInstanceMu.Unlock()
@@ -241,6 +354,14 @@ func (p *program) Stop(srv service.Service) error {
 		}
 	}
 	p.serverInstanceMu.Unlock()
+
+	if splitController := p.getSplitController(); splitController != nil {
+		splitCtx, splitCancel := context.WithTimeout(context.Background(), 5*time.Second)
+		if err := splitController.Stop(splitCtx); err != nil {
+			log.Errorf("failed to stop split tunnel controller: %v", err)
+		}
+		splitCancel()
+	}
 
 	p.cancel()
 

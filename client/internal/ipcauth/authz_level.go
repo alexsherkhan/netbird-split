@@ -1,6 +1,8 @@
 package ipcauth
 
 import (
+	"strings"
+
 	"google.golang.org/grpc/codes"
 	gstatus "google.golang.org/grpc/status"
 )
@@ -68,6 +70,12 @@ func denyLevel(r Request, want AuthzLevel) error {
 // deny through denyLevel instead: they cannot reach the policy table without an
 // initialization cycle, and no rule requires privilege.
 func denyPolicyLevel(r Request, p MethodPolicy, target Target) error {
+	// Split tunnel mutations are daemon-wide rather than profile-scoped. A
+	// profile-claim remedy would point the caller at the wrong operation.
+	if strings.HasPrefix(r.Method, splitServicePath) {
+		return denyLevel(r, p.Level)
+	}
+
 	switch p.Level {
 	case AuthzLevelPrivileged:
 		if p.Action != "" {

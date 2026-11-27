@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net/netip"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -231,6 +232,29 @@ func New(ctx context.Context, logFile string, configFile string, profilesDisable
 	s.localMetrics = localmetrics.NewManager(ctx, s.statusRecorder, s.clientMetricsGatherer)
 
 	return s
+}
+
+// SplitTunnelRuntime returns the overlay interface and addresses the split
+// tunnel controller uses to build policy route targets. The interface name is
+// available before the engine connects; the addresses are not.
+func (s *Server) SplitTunnelRuntime() (iface string, overlay4, overlay6 netip.Addr) {
+	s.mutex.Lock()
+	config := s.config
+	connectClient := s.connectClient
+	s.mutex.Unlock()
+
+	if config == nil || config.WgIface == "" {
+		return "", netip.Addr{}, netip.Addr{}
+	}
+	iface = config.WgIface
+	if connectClient == nil {
+		return iface, netip.Addr{}, netip.Addr{}
+	}
+	engine := connectClient.Engine()
+	if engine == nil {
+		return iface, netip.Addr{}, netip.Addr{}
+	}
+	return iface, engine.GetWgAddr(), engine.GetWgV6Addr()
 }
 
 // clientMetricsGatherer returns the Prometheus gatherer of the running

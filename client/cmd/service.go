@@ -17,6 +17,7 @@ import (
 
 	"github.com/netbirdio/netbird/client/internal"
 	"github.com/netbirdio/netbird/client/internal/ipcauth"
+	"github.com/netbirdio/netbird/client/internal/splittunnel/controller"
 	"github.com/netbirdio/netbird/client/server"
 )
 
@@ -81,6 +82,21 @@ type program struct {
 	serverInstance   *server.Server
 	serverInstanceMu sync.Mutex
 	authzGate        *ipcauth.AuthzGate
+
+	splitController   *controller.Controller
+	splitControllerMu sync.Mutex
+}
+
+func (p *program) setSplitController(ctrl *controller.Controller) {
+	p.splitControllerMu.Lock()
+	defer p.splitControllerMu.Unlock()
+	p.splitController = ctrl
+}
+
+func (p *program) getSplitController() *controller.Controller {
+	p.splitControllerMu.Lock()
+	defer p.splitControllerMu.Unlock()
+	return p.splitController
 }
 
 func init() {

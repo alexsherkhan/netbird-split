@@ -4,7 +4,11 @@ import (
 	"github.com/netbirdio/netbird/client/proto"
 )
 
-const servicePath = "/daemon.DaemonService/"
+const (
+	servicePath = "/daemon.DaemonService/"
+	// splitServicePath is the full gRPC method prefix of SplitTunnelService.
+	splitServicePath = "/daemon.SplitTunnelService/"
+)
 
 // Request is what a rule decides on: the authorization plus the state and the
 // message, which only the gate needs.
@@ -138,8 +142,35 @@ var methodPolicies = map[string]MethodPolicy{
 	},
 }
 
+// splitMethodPolicies is the authorization surface of SplitTunnelService.
+// Reads are available to every identified caller. Mutations need a privileged
+// caller because they rewrite the daemon's kernel-facing policy.
+var splitMethodPolicies = map[string]MethodPolicy{
+	splitServicePath + "GetStatus":        {Level: AuthzLevelIdentified, Action: "reading split tunnel status"},
+	splitServicePath + "GetConfig":        {Level: AuthzLevelIdentified, Action: "reading the split tunnel configuration"},
+	splitServicePath + "ListApplications": {Level: AuthzLevelIdentified, Action: "listing split tunnel applications"},
+	splitServicePath + "ListRules":        {Level: AuthzLevelIdentified, Action: "listing split tunnel rules"},
+	splitServicePath + "TracePacket":      {Level: AuthzLevelIdentified, Action: "tracing a split tunnel packet"},
+	splitServicePath + "ListEvents":       {Level: AuthzLevelIdentified, Action: "reading split tunnel events"},
+	splitServicePath + "SubscribeEvents":  {Level: AuthzLevelIdentified, Action: "following split tunnel events"},
+
+	splitServicePath + "SetConfig": {
+		Level:  AuthzLevelPrivileged,
+		Audit:  true,
+		Action: "changing the split tunnel configuration",
+	},
+	splitServicePath + "RollbackConfig": {
+		Level:  AuthzLevelPrivileged,
+		Audit:  true,
+		Action: "rolling back the split tunnel configuration",
+	},
+}
+
 func methodPolicyFor(method string) MethodPolicy {
 	if p, ok := methodPolicies[method]; ok {
+		return p
+	}
+	if p, ok := splitMethodPolicies[method]; ok {
 		return p
 	}
 	return MethodPolicy{Level: AuthzLevelPrivileged, Audit: true}
